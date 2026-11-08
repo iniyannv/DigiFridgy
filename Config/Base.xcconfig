@@ -1,0 +1,14 @@
+// Base build config for the DigiFridgy app target.
+// SpacetimeDB backend (not secret). Host has no scheme because xcconfig treats "//" as a comment;
+// the app uses https, or http for localhost / 127.x. Override in Secrets.xcconfig if needed.
+SPACETIME_HOST = maincloud.spacetimedb.com
+SPACETIME_DB = digifridgy-hud4l
+
+// Empty defaults so the project builds without secrets; Secrets.xcconfig overrides them.
+EDAMAM_APP_ID =
+EDAMAM_APP_KEY =
+KROGER_CLIENT_ID =
+KROGER_CLIENT_SECRET =
+CALORIENINJAS_KEY =
+
+#include? "Secrets.xcconfig"

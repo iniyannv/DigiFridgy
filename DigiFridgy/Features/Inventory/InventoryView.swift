@@ -4,6 +4,7 @@ struct InventoryView: View {
     @Environment(AppState.self) private var app
     @Environment(BankStore.self) private var bank
     @State private var showConnectBank = false
+    @State private var showCardPurchases = false
     @State private var showBarcodeScanner = false
     @State private var showReceiptScanner = false
     @State private var search = ""
@@ -47,6 +48,11 @@ struct InventoryView: View {
                     Menu {
                         Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
                         Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
+                        if bank.isLinked {
+                            Button("Add from card", systemImage: "creditcard") { showCardPurchases = true }
+                        } else if bank.status == .notLinked {
+                            Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
+                        }
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -56,6 +62,7 @@ struct InventoryView: View {
             .sheet(isPresented: $showBarcodeScanner) { BarcodeScanSheet() }
             .sheet(isPresented: $showReceiptScanner) { ReceiptScanSheet() }
             .sheet(isPresented: $showConnectBank) { ConnectBankSheet() }
+            .sheet(isPresented: $showCardPurchases) { AddFromCardSheet() }
         }
     }
 

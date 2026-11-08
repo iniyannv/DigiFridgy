@@ -210,3 +210,57 @@ async def state(request: Request, household_id: int | None = None, handle: str |
 def _app_household_id(s: Session, household_id: int) -> str | None:
     link = s.get(SpacetimeLink, household_id)
     return (link.app_household_id or None) if link else None
+
+
+# ---------- Add from card (the app's + menu) ----------
+
+class StockBody(BaseModel):
+    lines: list[int] | None = None  # line indexes to add; omitted = every pending line
+
+
+@router.get("/purchases")
+async def purchases(request: Request, household_id: int | None = None):
+    """Recent grocery card purchases with their products, and which ones are already in the fridge."""
+    from ..card import list_purchases
+    ctx = _ctx(request)
+    with Session(ctx.engine) as s:
+        hh = s.get(Household, household_id) if household_id else pick_household(s, None)
+        if not hh:
+            raise HTTPException(404, "no such household")
+        return {"purchases": list_purchases(ctx, s, hh.id)}
+
+
+@router.post("/purchases/{purchase_id}/stock")
+async def stock_purchase(request: Request, purchase_id: str, body: StockBody,
+                         household_id: int | None = None):
+    from .. import card
+    from ..photon.outbound import notify_household
+    ctx = _ctx(request)
+    with Session(ctx.engine) as s:
+        hh = s.get(Household, household_id) if household_id else pick_household(s, None)
+        if not hh:
+            raise HTTPException(404, "no such household")
+        fresh = card.stock_lines(ctx, s, hh, purchase_id, body.lines)
+        s.commit()
+        names = sorted({i.name for i in fresh})
+        hh_id = hh.id
+    await _sync_app(ctx)
+    if fresh:
+        # Keep the iMessage thread in step with what was picked in the app.
+        await notify_household(ctx, hh_id, f"🧊 Added {len(fresh)} items from the app: {', '.join(names[:4])}"
+                               + (" …" if len(names) > 4 else ""),
+                               f"cardadd:{purchase_id}:{ctx.clock.real_now().timestamp():.0f}")
+    return {"added": len(fresh), "names": names}
+
+
+@router.post("/purchases/{purchase_id}/skip")
+async def skip_purchase(request: Request, purchase_id: str, household_id: int | None = None):
+    from .. import card
+    ctx = _ctx(request)
+    with Session(ctx.engine) as s:
+        hh = s.get(Household, household_id) if household_id else pick_household(s, None)
+        if not hh:
+            raise HTTPException(404, "no such household")
+        n = card.skip_rest(s, hh, purchase_id, ctx.clock.now())
+        s.commit()
+    return {"skipped": n}

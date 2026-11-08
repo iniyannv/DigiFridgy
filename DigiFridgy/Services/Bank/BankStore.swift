@@ -40,6 +40,32 @@ nonisolated struct BankState: Decodable, Sendable {
     var line: String?
 }
 
+nonisolated struct CardLine: Decodable, Sendable, Identifiable, Hashable {
+    var index: Int
+    var sku: String
+    var name: String
+    var emoji: String
+    var qty: Int
+    var total: Double
+    var shelf_life_days: Int
+    var status: String  // pending | stocked | skipped
+    var id: Int { index }
+    var isAdded: Bool { status == "stocked" }
+}
+
+nonisolated struct CardPurchase: Decodable, Sendable, Identifiable {
+    var purchase_id: String
+    var merchant: String
+    var date: String
+    var amount: Double
+    var lines: [CardLine]
+    var id: String { purchase_id }
+    var pendingCount: Int { lines.filter { $0.status != "stocked" }.count }
+}
+
+nonisolated struct CardPurchaseList: Decodable, Sendable { var purchases: [CardPurchase] }
+nonisolated struct CardStockResult: Decodable, Sendable { var added: Int; var names: [String] }
+
 nonisolated struct BankActionResult: Decodable, Sendable {
     var processed: Int?
     var expired: Int?
@@ -212,13 +238,13 @@ final class BankStore {
         return line.isEmpty ? "Bank connected." : "Bank connected. Text hi to \(line) to start iMessage alerts."
     }
 
-    /// Creates a real Nessie purchase; the backend stocks the shared fridge and texts you.
+    /// Creates a real Nessie purchase; the backend texts you to confirm what goes in the fridge.
     func buy(_ basket: BankBasket) async throws -> String {
         _ = try await run { try await self.post("/demo/buy", query: [("basket", basket.id)] + self.bankQuery,
                                                  as: BankActionResult.self) }
         return basket.id == "fuel"
             ? "Bought gas at \(basket.store). Not groceries, so the fridge stays the same."
-            : "Bought \(basket.title.lowercased()) at \(basket.store). It'll show up in your fridge in a moment."
+            : "Bought \(basket.title.lowercased()) at \(basket.store). Reply YES to the text, or add items from + → Add from card."
     }
 
     func advance(days: Int) async throws -> String {
@@ -230,6 +256,38 @@ final class BankStore {
     func sweep() async throws -> String {
         _ = try await run { try await self.post("/demo/sweep", query: self.bankQuery, as: BankActionResult.self) }
         return "Budget sweep offer sent. Reply YES by text to move the money."
+    }
+
+    // MARK: - Add from card
+
+    /// Recent grocery card purchases with their products (from the bank transaction).
+    func cardPurchases() async throws -> [CardPurchase] {
+        do {
+            return try await APIClient.shared.get(CardPurchaseList.self, from: try url("/demo/purchases", bankQuery),
+                                                  headers: authHeaders).purchases
+        } catch {
+            throw BankError(message: message(for: error))
+        }
+    }
+
+    /// Adds the chosen lines to the shared fridge; the backend pushes them to the app right away.
+    func addFromCard(_ purchase: CardPurchase, lines: Set<Int>) async throws -> String {
+        isBusy = true
+        defer { isBusy = false }
+        var request = URLRequest(url: try url("/demo/purchases/\(purchase.purchase_id)/stock", bankQuery))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        authHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["lines": Array(lines).sorted()])
+        do {
+            let r = try await APIClient.shared.send(request, as: CardStockResult.self)
+            await refresh()
+            return r.added == 0 ? "Those items are already in your fridge."
+                : "Added \(r.added) item\(r.added == 1 ? "" : "s") from \(purchase.merchant)."
+        } catch {
+            throw BankError(message: message(for: error))
+        }
     }
 
     private func run(_ work: @escaping () async throws -> BankActionResult) async throws -> BankActionResult {

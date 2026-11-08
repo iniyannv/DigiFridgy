@@ -168,3 +168,18 @@ class SpaceSyncState(SQLModel, table=True):
     household_id: int = Field(index=True)
     count: int = 0
     app_count: int = 0
+
+
+class CardPurchaseLine(SQLModel, table=True):
+    """One product line of a card purchase. Recent purchases wait here until the
+    person adds them (text YES, or pick lines in the app's Add from card)."""
+    __tablename__ = "card_purchase_lines"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    nessie_purchase_id: str = Field(index=True)
+    household_id: int = Field(index=True)
+    line_index: int
+    sku: str
+    qty: int
+    total: float
+    status: str = "pending"  # pending | stocked | skipped
+    status_at: Optional[NaiveDatetime] = None

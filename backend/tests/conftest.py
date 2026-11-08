@@ -38,6 +38,7 @@ def ctx(tmp_path: Path) -> Ctx:
         database_url=f"sqlite:///{tmp_path}/test.db", mock_nessie_path=str(tmp_path / "nessie.json"),
         demo_mode=True, use_mock_nessie=True, use_mock_photon=True, voice_tool_secret="s3cret",
         photon_webhook_secret="", run_background=False, photon_agent_handle="+15550100000",
+        auto_stock=True,  # most tests check stocking; test_card covers the review flow
     )
     engine = make_engine(settings.database_url)
     return Ctx(settings=settings, engine=engine, clock=Clock(settings.tz, engine, base=BASE),

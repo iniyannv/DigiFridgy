@@ -37,6 +37,13 @@ async def lifespan(app: FastAPI):
              "SIMULATED" if ctx.photon.is_mock else "live",
              _spacetime_label(ctx), st.llm_model if ctx.llm else "off (keywords only)", st.demo_mode)
     tasks = []
+    try:
+        from .card import backfill
+        n = await backfill(ctx)
+        if n:
+            log.info("card review: saved product lines for %d earlier purchase(s)", n)
+    except Exception:
+        log.exception("card backfill failed")
     if st.run_background:
         tasks = [asyncio.create_task(poll_loop(ctx), name="photon-poll"),
                  asyncio.create_task(sync_loop(ctx), name="nessie-sync"),

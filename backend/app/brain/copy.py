@@ -52,6 +52,16 @@ def stocked(merchant: str, amount: float, fresh, clock) -> str:
 SECTION_MAX = 8
 
 
+def stock_question(merchant: str, amount: float, count: int, names: list[str]) -> str:
+    shown = ", ".join(names[:3]) + (f" +{len(names) - 3} more" if len(names) > 3 else "")
+    return (f"🧾 Card purchase at {merchant} ({usd(amount)}): {shown}\n"
+            f"Add all {count} items to your fridge? Reply YES or NO, or pick items in the app.")
+
+
+def stock_declined(left: int) -> str:
+    return "👍 Not added. Pick items anytime in the app under + → Add from card." if left else "👍 OK."
+
+
 def fridge(items, clock, use_soon_ids: set[int]) -> str:
     if not items:
         return "🧊 Your fridge is empty.\nBuy groceries with your card and I'll stock it automatically."

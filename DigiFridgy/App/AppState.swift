@@ -151,6 +151,8 @@ final class AppState {
         let notifications = services.notifications
         guard let previous else {
             await notifications.removeExpiryReminders(except: Set(current.map(\.id)))
+            // Signed out or left while waiting: don't bring back the old household's reminders.
+            guard !Task.isCancelled else { return }
             current.forEach(notifications.scheduleExpiryReminder)
             return
         }

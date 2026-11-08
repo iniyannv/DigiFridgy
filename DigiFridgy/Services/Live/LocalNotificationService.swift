@@ -48,6 +48,11 @@ final class LocalNotificationService: NotificationService {
             .filter { $0.trigger is UNCalendarNotificationTrigger && !keep.contains($0.identifier) }
             .map(\.identifier)
         center.removePendingNotificationRequests(withIdentifiers: stale)
+        // Alerts already shown for items that are gone, too.
+        let shown = await center.deliveredNotifications()
+            .filter { $0.request.trigger is UNCalendarNotificationTrigger && !keep.contains($0.request.identifier) }
+            .map(\.request.identifier)
+        center.removeDeliveredNotifications(withIdentifiers: shown)
     }
 
     func notifyNow(id: String, title: String, body: String) {

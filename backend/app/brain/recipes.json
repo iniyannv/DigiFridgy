@@ -1,0 +1,20 @@
+[
+  {"name": "Spinach and cheddar omelet", "uses": ["spinach_5oz", "eggs_dozen", "cheddar_block_16oz"]},
+  {"name": "Garlic chicken with sautéed spinach", "uses": ["chicken_breast_2lb", "spinach_5oz"]},
+  {"name": "Chicken and bell pepper fajitas", "uses": ["chicken_breast_2lb", "bell_peppers_3ct", "tortillas_10ct"]},
+  {"name": "Chicken fried rice", "uses": ["chicken_breast_2lb", "rice_2lb", "eggs_dozen", "frozen_peas_12oz"]},
+  {"name": "Strawberry yogurt parfait", "uses": ["strawberries_1lb", "yogurt_greek_32oz"]},
+  {"name": "Berry banana smoothie", "uses": ["strawberries_1lb", "blueberries_pint", "bananas_bunch", "yogurt_greek_32oz", "milk_whole_1gal"]},
+  {"name": "Banana pancakes", "uses": ["bananas_bunch", "eggs_dozen", "milk_whole_1gal"]},
+  {"name": "Beef tacos", "uses": ["ground_beef_1lb", "tortillas_10ct", "cheese_shredded_8oz", "tomatoes_1lb", "lettuce_romaine"]},
+  {"name": "Spaghetti with meat sauce", "uses": ["ground_beef_1lb", "pasta_16oz", "pasta_sauce_24oz", "onions_3lb"]},
+  {"name": "Pan-seared salmon with broccoli", "uses": ["salmon_fillet_1lb", "broccoli_crown", "lemons_3ct"]},
+  {"name": "Broccoli cheddar rice bowl", "uses": ["broccoli_crown", "cheddar_block_16oz", "rice_2lb"]},
+  {"name": "Turkey and hummus wraps", "uses": ["deli_turkey_9oz", "hummus_10oz", "tortillas_10ct", "lettuce_romaine"]},
+  {"name": "Avocado toast with eggs", "uses": ["avocados_4ct", "bread_wheat", "eggs_dozen"]},
+  {"name": "Grilled cheese and tomato soup", "uses": ["bread_wheat", "cheddar_block_16oz", "tomatoes_1lb", "butter_1lb"]},
+  {"name": "Big green salad with chicken", "uses": ["lettuce_romaine", "spinach_5oz", "chicken_breast_2lb", "tomatoes_1lb", "carrots_2lb"]},
+  {"name": "Loaded baked potatoes", "uses": ["potatoes_5lb", "sour_cream_16oz", "cheese_shredded_8oz", "bacon_12oz", "broccoli_crown"]},
+  {"name": "Bacon, egg and cheese sandwiches", "uses": ["bacon_12oz", "eggs_dozen", "bread_wheat", "cheddar_block_16oz"]},
+  {"name": "Leftover remix bowl over rice", "uses": ["leftovers", "rice_2lb", "eggs_dozen"]}
+]

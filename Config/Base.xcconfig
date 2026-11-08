@@ -14,10 +14,10 @@ WALMART_CONSUMER_ID =
 WALMART_KEY_VERSION = 1
 WALMART_PRIVATE_KEY =
 
-// DigiFridgey bank/iMessage server (backend/). Empty = localhost:8010 in the Simulator; a device build must set it
-// in Secrets.xcconfig (or the user types it in Settings). "//" starts a comment in xcconfig, so write the URL as
-// http:/$()/192.168.1.20:8010, or leave out the scheme (192.168.1.20:8010) and the app adds http://.
-DIGIFRIDGEY_SERVER =
+// DigiFridgey bank/iMessage server (backend/). Defaults to the shared backend behind the Cloudflare tunnel
+// (backend/cloudflared.yml). Override in Secrets.xcconfig to use your own; "//" starts a comment in xcconfig, so
+// write the URL as http:/$()/192.168.1.20:8010, or leave out the scheme and the app adds http://.
+DIGIFRIDGEY_SERVER = https:/$()/digifridgy.soumilvoona.me
 // Optional operator token (the server's DEMO_TOKEN), sent as the X-Demo-Token header. App users don't need it:
 // their requests carry their SpacetimeDB sign-in token as Authorization: Bearer.
 DIGIFRIDGEY_TOKEN =

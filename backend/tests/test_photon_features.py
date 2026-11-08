@@ -48,10 +48,13 @@ def test_first_member_links_the_group(flatmates):
     assert all(m["spaceId"] == ctx.photon._spaces["group:flat"] for m in ctx.photon.group_conversation("flat"))
 
 
-def test_strangers_in_the_group_are_ignored(flatmates):
+def test_strangers_in_the_group_get_one_explanation(flatmates):
     ctx = flatmates
     group_say(ctx, HANDLE, "hi")
-    assert group_say(ctx, "+15555550111", "what's expiring?") == ""
+    first = group_say(ctx, "+15555550111", "what's expiring?")
+    assert "only answer people in the household" in first and "INVITE" in first
+    assert "Use soon" not in first  # their command isn't run
+    assert group_say(ctx, "+15555550111", "what's expiring?") == ""  # and only once
 
 
 def test_who_is_grabbing_milk(flatmates):

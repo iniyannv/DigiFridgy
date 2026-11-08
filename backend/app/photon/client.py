@@ -6,6 +6,11 @@ Endpoints (from photon-hq/api openapi.json, server https://api.photon.codes):
                                                    parentMessageId, content{type,format,text})
   GET  /v1/projects/{id}/attachments/{attachmentId}[/content]   attachment metadata / bytes
   POST /v1/projects/{id}/spaces/{spaceId}/typing                {senderId, typing}
+  POST /v1/projects/{id}/users                 createOrGetUser  {handle, platform} -> User {id, handle}
+  POST /v1/projects/{id}/spaces                createOrGetSpace (header idempotency-key; body participantIds,
+                                               platform). For iMessage the first participant must be a
+                                               project-owned DEDICATED line: shared lines can't start a chat.
+  GET  /v1/projects/{id}/spaces/{spaceId}      Space {id, kind, participantIds}; GET /users/{userId} -> handle
   GET/POST /v1/projects/{id}/webhooks/destinations              webhook destinations (signingSecret on create)
 Inbound content: text, attachment {attachmentId}, reaction {reaction, action} (parentMessageId = the
 message reacted to). Spaces have a `kind`: "direct" for 1:1, anything else is a group.
@@ -181,6 +186,32 @@ class PhotonClient:
         return await self._call("POST", f"/v1/projects/{self.project_id}/messages",
                                 headers={"idempotency-key": idempotency_key}, json=body)
 
+    async def create_or_get_user(self, handle: str, platform: str = "imessage") -> str:
+        user = await self._call("POST", f"/v1/projects/{self.project_id}/users",
+                                json={"handle": handle, "platform": platform}) or {}
+        return (user.get("user") or user)["id"]
+
+    async def create_group(self, agent_user_id: str, handles: list[str], idempotency_key: str,
+                           platform: str = "imessage") -> dict:
+        """Starts a group chat with these people. Only works from a dedicated line (the agent goes first);
+        on a shared line Photon refuses and the caller falls back to instructions."""
+        ids = [agent_user_id] + [await self.create_or_get_user(h, platform) for h in handles]
+        space = await self._call("POST", f"/v1/projects/{self.project_id}/spaces",
+                                 headers={"idempotency-key": idempotency_key},
+                                 json={"participantIds": list(dict.fromkeys(ids)), "platform": platform}) or {}
+        return space.get("space") or space
+
+    async def space_handles(self, space_id: str) -> list[str]:
+        """Handles of the people in a space (not agents). Best effort: one lookup per participant."""
+        space = await self._call("GET", f"/v1/projects/{self.project_id}/spaces/{space_id}") or {}
+        space = space.get("space") or space
+        out = []
+        for uid in (space.get("participantIds") or [])[:12]:
+            user = await self._call("GET", f"/v1/projects/{self.project_id}/users/{uid}") or {}
+            user = user.get("user") or user
+            if user.get("kind", "human") != "agent" and user.get("handle"):
+                out.append(user["handle"])
+        return out
 
     async def set_typing(self, space_id: str, sender_id: str, typing: bool = True) -> None:
         await self._call("POST", f"/v1/projects/{self.project_id}/spaces/{space_id}/typing",
@@ -232,8 +263,10 @@ class MockPhotonClient:
 
     is_mock = True
 
-    def __init__(self, agent_handle: str = "+15550100000"):
+    def __init__(self, agent_handle: str = "+15550100000", dedicated: bool = False):
         self.agent_handle = agent_handle
+        self.dedicated = dedicated          # a dedicated line can start group chats; a shared one can't
+        self.participants: dict[str, list[str]] = {}   # group space id -> handles in it
         self.agent_id = _pid("usr")
         self.inbox: list[dict] = []
         self.outbox: list[dict] = []
@@ -252,9 +285,10 @@ class MockPhotonClient:
 
     def inject(self, handle: str, text: str | None = None, created_at: datetime | None = None, *,
                group: str | None = None, image: bytes | None = None, image_type: str = "image/jpeg",
-               reaction: str | None = None, parent_id: str | None = None) -> dict:
-        """A person texting. `group` names a group chat (shared space); `image` sends a photo;
-        `reaction` + `parent_id` sends a tapback on one of our messages."""
+               reaction: str | None = None, parent_id: str | None = None,
+               members: list[str] | None = None) -> dict:
+        """A person texting. `group` names a group chat (shared space); `members` are the other people
+        in that group; `image` sends a photo; `reaction` + `parent_id` sends a tapback on one of our messages."""
         created_at = created_at or datetime.now(timezone.utc).replace(tzinfo=None)
         if reaction:
             content = {"type": "reaction", "reaction": reaction, "action": "add"}
@@ -278,8 +312,26 @@ class MockPhotonClient:
         }
         if parent_id:
             msg["parentMessageId"] = parent_id
+        if group:
+            people = self.participants.setdefault(space["id"], [])
+            for h in [handle, *(members or [])]:
+                if h not in people:
+                    people.append(h)
         self.inbox.append(msg)
         return msg
+
+    async def space_handles(self, space_id: str) -> list[str]:
+        return list(self.participants.get(space_id, []))
+
+    async def create_group(self, agent_user_id: str, handles: list[str], idempotency_key: str,
+                           platform: str = "imessage") -> dict:
+        if not self.dedicated:
+            raise PhotonError("SIMULATED: a shared line can't start a group chat (needs a dedicated line)")
+        key = "group:" + ",".join(sorted(handles))
+        space_id = self._spaces.setdefault(key, _pid("spc"))
+        self.participants[space_id] = list(dict.fromkeys(handles))
+        log.info("[SIMULATED Photon] started a group with %d people", len(handles))
+        return {"id": space_id, "kind": "group", "platform": platform}
 
     async def set_typing(self, space_id: str, sender_id: str, typing: bool = True) -> None:
         self.typing.append(space_id)

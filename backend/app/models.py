@@ -221,6 +221,19 @@ class HouseholdSpace(SQLModel, table=True):
     linked_at: NaiveDatetime
 
 
+class HouseholdInvite(SQLModel, table=True):
+    """A number a member invited (INVITE +1469…). When that person texts, 1:1 or in the household group,
+    they join the inviting household. Invited members are guests: they share the fridge and list, but
+    money only moves with a YES from the account holder. `member_id` is set once they join."""
+    __tablename__ = "household_invites"
+    handle: str = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    name: Optional[str] = None
+    invited_by: Optional[int] = None
+    created_at: NaiveDatetime
+    member_id: Optional[int] = Field(default=None, index=True)
+
+
 class ListClaim(SQLModel, table=True):
     """Who said they'd buy a shopping-list item ("I'll grab milk"). `synced_name` is the claim last
     agreed with the app, the base for merging claims made in either place."""

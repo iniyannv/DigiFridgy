@@ -119,9 +119,11 @@ struct ReceiptScanSheet: View {
     private var reviewView: some View {
         List {
             if drafts.isEmpty {
-                ContentUnavailableView("No items found", systemImage: "doc.text.magnifyingglass",
-                                       description: Text("Couldn't find product lines on this receipt. Try a flatter, brighter photo."))
-                Button("Try again") { stage = .pick }
+                EmptyStateView(symbol: "doc.text.magnifyingglass",
+                               title: "No items found",
+                               message: "Couldn't read product lines on this receipt. Lay it flat in good light and try again.",
+                               primaryTitle: "Retake photo", primary: { stage = .pick })
+                    .listRowBackground(Color.clear)
             } else {
                 Section {
                     ForEach($drafts) { $draft in
@@ -236,12 +238,32 @@ private struct DraftRow: View {
                 Image(systemName: draft.include ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(draft.include ? Color.accentColor : .secondary)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Include \(draft.name.isEmpty ? "item" : draft.name)")
+            .accessibilityAddTraits(draft.include ? .isSelected : [])
+            .sensoryFeedback(.selection, trigger: draft.include)
 
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Name", text: $draft.name).font(.body.weight(.medium))
+                ViewThatFits(in: .horizontal) {
+                    HStack { categoryPicker; Spacer(); countStepper }
+                    VStack(alignment: .leading) { categoryPicker; countStepper }
+                }
                 HStack {
+                    Text(draft.raw).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1)
+                    Spacer()
+                    Text("Keeps about \(app.shelfLife.fridgeDays(for: draft.category)) days")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .opacity(draft.include ? 1 : 0.45)
+        }
+    }
+
+    private var categoryPicker: some View {
                     Picker("Category", selection: $draft.category) {
                         ForEach(app.shelfLife.categories) { c in
                             Text("\(CategoryStyle.emoji(for: c.id)) \(c.name)").tag(c.id)
@@ -251,20 +273,14 @@ private struct DraftRow: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                     .fixedSize()
-                    Spacer()
-                    Stepper("×\(draft.count)", value: $draft.count, in: 1...99)
-                        .fixedSize()
-                        .font(.subheadline.monospacedDigit())
-                }
-                HStack {
-                    Text(draft.raw).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1)
-                    Spacer()
-                    Text("Est. \(app.shelfLife.fridgeDays(for: draft.category))d")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            .opacity(draft.include ? 1 : 0.45)
-        }
+    }
+
+    private var countStepper: some View {
+        Stepper("×\(draft.count)", value: $draft.count, in: 1...99)
+            .fixedSize()
+            .font(.subheadline.monospacedDigit())
+            .accessibilityLabel("Quantity")
+            .accessibilityValue("\(draft.count)")
     }
 }
 

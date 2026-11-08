@@ -8,12 +8,15 @@ struct InventoryView: View {
     @State private var showBarcodeScanner = false
     @State private var showReceiptScanner = false
     @State private var search = ""
+    @State private var countChanges = 0
 
     private var filtered: [FridgeItem] {
         let sorted = app.sortedItems
         guard !search.isEmpty else { return sorted }
         return sorted.filter { ($0.name + " " + ($0.brand ?? "")).localizedCaseInsensitiveContains(search) }
     }
+
+    private var openShopping: Int { app.shoppingList.filter { !$0.done }.count }
 
     var body: some View {
         NavigationStack {
@@ -33,16 +36,19 @@ struct InventoryView: View {
                     NavigationLink {
                         ShoppingListView()
                     } label: {
-                        Image(systemName: "checklist")
+                        Label("Shopping list", systemImage: "checklist")
                             .overlay(alignment: .topTrailing) {
-                                let open = app.shoppingList.filter { !$0.done }.count
-                                if open > 0 {
-                                    Text("\(open)").font(.caption2.bold()).foregroundStyle(.white)
-                                        .padding(3).background(.red, in: .circle).offset(x: 8, y: -8)
+                                if openShopping > 0 {
+                                    Text("\(openShopping)").font(.caption2.bold()).monospacedDigit()
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16)
+                                        .background(.red, in: .capsule)
+                                        .offset(x: 9, y: -8)
+                                        .accessibilityHidden(true)
                                 }
                             }
                     }
-                    .accessibilityLabel("Shopping list")
+                    .accessibilityValue(openShopping > 0 ? "\(openShopping) to buy" : "")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -54,9 +60,8 @@ struct InventoryView: View {
                             Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
                         }
                     } label: {
-                        Image(systemName: "plus")
+                        Label("Add items", systemImage: "plus")
                     }
-                    .accessibilityLabel("Add items")
                 }
             }
             .sheet(isPresented: $showBarcodeScanner) { BarcodeScanSheet() }
@@ -71,8 +76,6 @@ struct InventoryView: View {
             if search.isEmpty {
                 Section {
                     FridgeSummaryCard()
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
                 }
                 if bank.isLinked || bank.status == .notLinked {
                     Section { BankBudgetCard() }
@@ -95,10 +98,10 @@ struct InventoryView: View {
                                 }
                             } icon: {
                                 Image(systemName: "exclamationmark.octagon.fill")
-                                    .foregroundStyle(item.recallFlag?.isPossible == true ? .orange : .red)
+                                    .foregroundStyle(item.recallFlag?.tone.color ?? Tone.danger.color)
                             }
                         }
-                        .listRowBackground(Color.red.opacity(0.12))
+                        .listRowBackground((item.recallFlag?.tone ?? .danger).fill)
                     }
                 }
             }
@@ -115,24 +118,39 @@ struct InventoryView: View {
                             NavigationLink(value: item.id) { InventoryRow(item: item) }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
-                                        Task { await app.delete(item) }
+                                        Task { await app.delete(item, undoable: true) }
                                     } label: {
                                         Label("Delete", systemImage: "trash")
                                     }
                                     Button {
+                                        countChanges += 1
                                         Task { await app.adjustCount(item, by: -1) }
                                     } label: {
-                                        Label(item.count > 1 ? "−1" : "Used up", systemImage: "minus.circle")
+                                        Label(item.count > 1 ? "Use one" : "Used up", systemImage: "minus.circle")
                                     }
                                     .tint(.orange)
                                 }
                                 .swipeActions(edge: .leading) {
                                     Button {
+                                        countChanges += 1
                                         Task { await app.adjustCount(item, by: 1) }
                                     } label: {
-                                        Label("+1", systemImage: "plus.circle")
+                                        Label("Add one", systemImage: "plus.circle")
                                     }
                                     .tint(.green)
+                                }
+                                .contextMenu {
+                                    Button("Add one", systemImage: "plus.circle") {
+                                        countChanges += 1
+                                        Task { await app.adjustCount(item, by: 1) }
+                                    }
+                                    Button(item.count > 1 ? "Use one" : "Used up", systemImage: "minus.circle") {
+                                        countChanges += 1
+                                        Task { await app.adjustCount(item, by: -1) }
+                                    }
+                                    Button("Delete", systemImage: "trash", role: .destructive) {
+                                        Task { await app.delete(item, undoable: true) }
+                                    }
                                 }
                         }
                     } header: {
@@ -141,12 +159,18 @@ struct InventoryView: View {
                         // Bank purchases know their price, so expired food has a dollar figure.
                         let lost = items.filter { $0.urgency() == .expired }.compactMap(\.value).reduce(0, +)
                         if lost > 0 {
-                            Text("\(lost.formatted(.currency(code: "USD"))) of groceries expired. Toss or use them so your budget stays accurate.")
+                            Text("\(lost.usd) of groceries expired. Toss or use them so your budget stays accurate.")
                         }
                     }
                 }
             }
         }
+        .overlay {
+            if !search.isEmpty && filtered.isEmpty {
+                ContentUnavailableView.search(text: search)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: countChanges)
         .searchable(text: $search, prompt: "Search your fridge")
         .refreshable { await app.runChecks() }
     }
@@ -155,17 +179,18 @@ struct InventoryView: View {
         ContentUnavailableView {
             Label("Your fridge is empty", systemImage: "refrigerator")
         } description: {
-            Text(bank.isLinked
-                 ? "Scan a barcode or a receipt, or buy groceries with your card, to start tracking what you have and when it expires."
-                 : "Scan a barcode or a grocery receipt to start tracking what you have and when it expires.")
+            Text("Scan what you buy and DigiFridgy tracks when it expires, so you use it before it goes bad.")
         } actions: {
-            Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
+            Button("Scan a barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
                 .buttonStyle(.glassProminent)
-            Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
+            Button("Scan a receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
                 .buttonStyle(.glass)
-            if bank.status == .notLinked {
-                Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
-                    .buttonStyle(.glass)
+            if bank.isLinked {
+                Button("Add from your card") { showCardPurchases = true }
+                    .font(.footnote)
+            } else if bank.status == .notLinked {
+                Button("Or connect a card instead") { showConnectBank = true }
+                    .font(.footnote)
             }
             if app.services.isMock {
                 Button("Load demo items") { Task { await app.seedDemoHousehold() } }
@@ -178,7 +203,7 @@ struct InventoryView: View {
         List {
             ForEach(0..<6, id: \.self) { _ in
                 HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 11).fill(.fill.tertiary).frame(width: 44, height: 44)
+                    RoundedRectangle(cornerRadius: Radius.medium).fill(.fill.tertiary).frame(width: 44, height: 44)
                     VStack(alignment: .leading, spacing: 6) {
                         RoundedRectangle(cornerRadius: 4).fill(.fill.tertiary).frame(width: 160, height: 14)
                         RoundedRectangle(cornerRadius: 4).fill(.fill.quaternary).frame(width: 100, height: 10)
@@ -201,16 +226,17 @@ struct InventoryRow: View {
                     Circle().fill(item.urgency().tint).frame(width: 10, height: 10)
                         .overlay(Circle().stroke(.background, lineWidth: 2))
                         .offset(x: 3, y: 3)
+                        .accessibilityHidden(true) // ExpiryLabel says the same thing in words.
                 }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(item.name).font(.body.weight(.medium)).lineLimit(1)
                     if let flag = item.recallFlag {
-                        Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(flag.isPossible ? .orange : .red)
+                        Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(flag.tone.color)
                             .accessibilityLabel(flag.isPossible ? "Possible recall" : "Recalled")
                     }
                     if !item.allergenHits(for: app.userAllergens).isEmpty {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning.color)
                             .accessibilityLabel("Contains your allergen")
                     }
                     if item.isCardPurchase {
@@ -225,6 +251,7 @@ struct InventoryRow: View {
                 Text("×\(item.count)")
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Quantity \(item.count)")
             }
         }
         .padding(.vertical, 2)

@@ -8,12 +8,23 @@ nonisolated enum SpacetimeError: LocalizedError {
     case server(Int, String)
     case badResponse(String)
 
+    /// What the person sees: plain words and what to do next.
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "SpacetimeDB isn't configured. Set SPACETIME_HOST and SPACETIME_DB."
+        case .notConfigured: "Syncing isn't set up in this build."
         case .notSignedIn: "You're not signed in."
-        case .unauthorized(let detail): "SpacetimeDB rejected the sign-in token. \(detail.prefix(120))"
+        case .unauthorized: "Your sign-in expired. Sign out and back in to keep syncing."
         case .reducer(let message): message
+        case .server, .badResponse: "Can't reach your household right now. Check your connection; we'll keep trying."
+        }
+    }
+
+    /// Technical detail for the log and Settings → Developer.
+    var failureReason: String? {
+        switch self {
+        case .notConfigured: "SpacetimeDB isn't configured. Set SPACETIME_HOST and SPACETIME_DB."
+        case .notSignedIn, .reducer: nil
+        case .unauthorized(let detail): "SpacetimeDB rejected the sign-in token. \(detail.prefix(120))"
         case .server(let code, let body): "SpacetimeDB error \(code). \(body.prefix(140))"
         case .badResponse(let detail): "Unexpected SpacetimeDB response: \(detail)"
         }

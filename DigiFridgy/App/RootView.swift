@@ -7,7 +7,14 @@ struct RootView: View {
         Group {
             switch app.phase {
             case .launching:
-                ProgressView()
+                VStack(spacing: 16) {
+                    Image(systemName: "refrigerator.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.tint)
+                        .accessibilityHidden(true)
+                    ProgressView("Opening your fridge…")
+                        .foregroundStyle(.secondary)
+                }
             case .onboarding:
                 OnboardingView()
             case .householdSetup:

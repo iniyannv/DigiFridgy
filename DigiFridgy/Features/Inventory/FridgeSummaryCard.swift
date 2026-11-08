@@ -4,6 +4,7 @@ import Charts
 /// Whole-fridge summary: totals, Nutri-Score distribution, allergen flags, expiring this week.
 struct FridgeSummaryCard: View {
     @Environment(AppState.self) private var app
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private struct GradeCount: Identifiable {
         var grade: String
@@ -29,44 +30,61 @@ struct FridgeSummaryCard: View {
         let expiringValue = expiringItems.contains(where: \.expiryIsEstimated) ? "~\(expiringThisWeek)" : "\(expiringThisWeek)"
         let allergenFlags = items.filter { !$0.allergenHits(for: app.userAllergens).isEmpty }.count
         let totalUnits = items.reduce(0) { $0 + $1.count }
+        let scored = items.filter { $0.nutriScore != nil }.count
 
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 0) {
-                stat(value: "\(items.count)", label: "items", detail: "\(totalUnits) units", color: .primary)
-                Divider().frame(height: 36)
-                stat(value: expiringValue, label: "expiring this week",
-                     detail: expiringItems.contains(where: \.expiryIsEstimated) ? "incl. estimates" : nil, color: expiringThisWeek > 0 ? .orange : .primary)
-                Divider().frame(height: 36)
-                stat(value: "\(allergenFlags)", label: "allergen flags", detail: nil, color: allergenFlags > 0 ? .red : .primary)
+            let stats = Group {
+                stat(value: "\(items.count)", label: items.count == 1 ? "item" : "items",
+                     spoken: "\(items.count) \(items.count == 1 ? "item" : "items"), \(totalUnits) \(totalUnits == 1 ? "unit" : "units")",
+                     tone: nil)
+                stat(value: expiringValue, label: "use this week",
+                     spoken: "\(expiringThisWeek) expiring this week\(expiringValue.hasPrefix("~") ? ", including estimates" : "")",
+                     tone: expiringThisWeek > 0 ? .warning : nil)
+                stat(value: "\(allergenFlags)", label: allergenFlags == 1 ? "allergen flag" : "allergen flags",
+                     spoken: "\(allergenFlags) allergen \(allergenFlags == 1 ? "flag" : "flags")",
+                     tone: allergenFlags > 0 ? .danger : nil)
+            }
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) { stats }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 0) { stats }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Nutri-Score").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Chart(gradeCounts) { entry in
-                    BarMark(x: .value("Grade", entry.grade), y: .value("Items", entry.count))
-                        .foregroundStyle(NutriScoreBadge.color(for: entry.grade))
-                        .cornerRadius(4)
-                        .annotation(position: .top) {
-                            if entry.count > 0 {
-                                Text("\(entry.count)").font(.caption2).foregroundStyle(.secondary)
+            // A distribution needs a few scored items before it says anything.
+            if scored >= 3 {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Nutri-Score").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Chart(gradeCounts) { entry in
+                        BarMark(x: .value("Grade", entry.grade), y: .value("Items", entry.count))
+                            .foregroundStyle(NutriScoreBadge.color(for: entry.grade))
+                            .cornerRadius(4)
+                            .annotation(position: .top) {
+                                if entry.count > 0 {
+                                    Text("\(entry.count)").font(.caption2).foregroundStyle(.secondary)
+                                }
                             }
-                        }
+                    }
+                    .chartYAxis(.hidden)
+                    .frame(height: 64)
                 }
-                .chartYAxis(.hidden)
-                .frame(height: 80)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Nutri-Score")
+                .accessibilityValue(gradeCounts.filter { $0.count > 0 }
+                    .map { "\($0.grade == "?" ? "unscored" : $0.grade): \($0.count)" }.joined(separator: ", "))
             }
         }
-        .padding()
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
-        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
     }
 
-    private func stat(value: String, label: String, detail: String?, color: Color) -> some View {
+    private func stat(value: String, label: String, spoken: String, tone: Tone?) -> some View {
         VStack(spacing: 2) {
-            Text(value).font(.title2.bold()).foregroundStyle(color)
+            Text(value).font(.title2.bold().monospacedDigit())
+                .foregroundStyle(tone?.color ?? .primary)
             Text(label).font(.caption).foregroundStyle(.secondary)
-            if let detail { Text(detail).font(.caption2).foregroundStyle(.tertiary) }
+                .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: typeSize.isAccessibilitySize ? .leading : .center)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken)
     }
 }

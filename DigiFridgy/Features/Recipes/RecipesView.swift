@@ -19,18 +19,23 @@ struct RecipesView: View {
         NavigationStack {
             Group {
                 if app.items.isEmpty {
-                    ContentUnavailableView("No ingredients yet", systemImage: "fork.knife",
-                                           description: Text("Add food to your fridge and recipes that use it up will show here."))
+                    EmptyStateView(symbol: "fork.knife",
+                                   title: "No ingredients yet",
+                                   message: "Add food to your fridge and we'll suggest recipes that use what's expiring first.")
                 } else if isLoading && results.isEmpty {
                     skeleton
-                } else if let errorMessage, results.isEmpty {
-                    ContentUnavailableView {
-                        Label("Couldn't load recipes", systemImage: "wifi.exclamationmark")
-                    } description: {
-                        Text(errorMessage)
-                    } actions: {
-                        Button("Try again") { Task { await load(force: true) } }
-                    }
+                } else if errorMessage != nil, results.isEmpty {
+                    EmptyStateView(symbol: "wifi.exclamationmark",
+                                   title: "Couldn't load recipes",
+                                   message: "Check your internet connection and try again.",
+                                   primaryTitle: "Try again", primary: { Task { await load(force: true) } })
+                } else if results.isEmpty && !isLoading {
+                    EmptyStateView(symbol: "fork.knife",
+                                   title: "No recipe matches",
+                                   message: healthLabels.isEmpty
+                                       ? "We couldn't find recipes for what's in your fridge. Add a few more ingredients and try again."
+                                       : "We couldn't find recipes for what's in your fridge that avoid your allergens. Add a few more ingredients and try again.",
+                                   primaryTitle: "Refresh", primary: { Task { await load(force: true) } })
                 } else {
                     list
                 }
@@ -49,7 +54,7 @@ struct RecipesView: View {
                         .font(.subheadline.bold())
                     Text(soonestSummary).font(.subheadline).foregroundStyle(.secondary)
                     if !healthLabels.isEmpty {
-                        Text("Filtered: \(healthLabels.joined(separator: ", "))")
+                        Text("Avoiding: \(Allergen.allCases.filter(app.userAllergens.contains).map(\.displayName).joined(separator: ", "))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -62,18 +67,22 @@ struct RecipesView: View {
                         RecipeCard(scored: scored)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityHint("Opens the recipe")
                 }
             } footer: {
-                Text(app.services.isMock || !Secrets.hasEdamam ? "Sample recipes (offline mode)." : "Recipes from Edamam.")
+                Text(app.services.isMock || !Secrets.hasEdamam ? "Sample recipes." : "Recipes from Edamam.")
             }
         }
         .refreshable { await load(force: true) }
     }
 
     private var soonestSummary: String {
-        app.sortedItems.filter { $0.daysUntilExpiry() >= 0 }.prefix(4).map {
-            "\($0.name) (\($0.expiryLabel()))"
-        }.joined(separator: ", ")
+        app.sortedItems.filter { $0.daysUntilExpiry() >= 0 }.prefix(4).map { item in
+            let days = item.daysUntilExpiry()
+            let about = item.expiryIsEstimated ? "about " : ""
+            let when = days == 0 ? "\(about)today" : days == 1 ? "\(about)tomorrow" : "in \(about)\(days) days"
+            return "\(item.name), \(when)"
+        }.joined(separator: " · ")
     }
 
     private var skeleton: some View {
@@ -115,7 +124,7 @@ struct RecipeCard: View {
                     AsyncImage(url: url) { image in
                         image.resizable().scaledToFill()
                     } placeholder: {
-                        Color.secondary.opacity(0.15)
+                        Rectangle().fill(.fill.tertiary)
                     }
                 } else {
                     Image(systemName: "fork.knife")
@@ -126,10 +135,11 @@ struct RecipeCard: View {
                 }
             }
             .frame(width: 84, height: 84)
-            .clipShape(.rect(cornerRadius: 14))
+            .clipShape(.rect(cornerRadius: Radius.medium))
+            .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 5) {
-                Text(scored.recipe.title).font(.headline).lineLimit(2)
+                Text(Self.displayTitle(scored.recipe.title)).font(.headline).lineLimit(2)
                 if !scored.uses.isEmpty {
                     usesText.font(.subheadline)
                 }
@@ -147,9 +157,10 @@ struct RecipeCard: View {
                     }
                     if let source = scored.recipe.sourceName { Text(source) }
                     Spacer()
-                    Text("Score \(scored.score)")
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(scored.score > 0 ? Color.green.opacity(0.18) : Color.secondary.opacity(0.12), in: .capsule)
+                    let expiring = scored.uses.filter { $0.daysUntilExpiry <= 3 }.count
+                    if expiring > 0 {
+                        StatusChip(text: "Uses \(expiring) expiring", tone: .success)
+                    }
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -159,12 +170,21 @@ struct RecipeCard: View {
         .contentShape(.rect)
     }
 
+    /// Some sources shout ("INSTANT CHOCOLATE MOUSSE"); show those in title case.
+    static func displayTitle(_ title: String) -> String {
+        // Mostly capitals (a site name tacked on in mixed case still counts).
+        let letters = title.filter(\.isLetter)
+        let upper = letters.filter(\.isUppercase).count
+        guard letters.count >= 4, Double(upper) / Double(letters.count) > 0.7 else { return title }
+        return title.localizedCapitalized
+    }
+
     /// "Uses: spinach (exp. 1d), chicken" — expiring-soon matches in orange.
     private var usesText: Text {
         var parts: [Text] = []
         for match in scored.uses {
             if match.daysUntilExpiry <= 3 {
-                parts.append(Text("\(match.itemName) (\(match.expiryLabel))").foregroundStyle(.orange).bold())
+                parts.append(Text("\(match.itemName) (\(match.expiryLabel))").foregroundStyle(Tone.warning.color).bold())
             } else {
                 parts.append(Text(match.itemName))
             }

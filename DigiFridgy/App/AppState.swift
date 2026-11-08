@@ -75,6 +75,11 @@ final class AppState {
 
     func showError(_ error: any Error) {
         showError(message: error.localizedDescription)
+        // Keep the technical reason for the log and Settings → Developer, not the toast.
+        if let reason = (error as? LocalizedError)?.failureReason {
+            lastError = "\(error.localizedDescription) — \(reason)"
+            Self.log.error("\(reason, privacy: .public)")
+        }
     }
 
     func showError(message: String) {
@@ -119,6 +124,20 @@ final class AppState {
         self.household = household
         phase = .ready
         startListening(householdId: household.id)
+        // Reminders are asked for in context (after the first item is added), not on entry.
+        Task {
+            let granted = await services.notifications.isAuthorized()
+            notificationsDenied = !granted && UserDefaults.standard.bool(forKey: Self.askedNotificationsKey)
+            if granted { scheduleReconcile() }
+        }
+    }
+
+    private static let askedNotificationsKey = "askedNotificationPermission"
+
+    /// First time something lands in the fridge: ask for reminder permission, when the reason is obvious.
+    private func requestNotificationsIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: Self.askedNotificationsKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.askedNotificationsKey)
         Task {
             let granted = await services.notifications.requestAuthorization()
             notificationsDenied = !granted
@@ -144,7 +163,8 @@ final class AppState {
             } catch {
                 self?.itemsLoaded = true
                 self?.streamsEnded = true
-                self?.showError(message: "The fridge stopped updating: \(error.localizedDescription)")
+                self?.showError(message: "Your fridge stopped syncing. Leave the app and come back to reconnect.")
+                Self.log.error("items stream ended: \(error.localizedDescription, privacy: .public)")
             }
         }
         approvalsTask?.cancel()
@@ -161,7 +181,8 @@ final class AppState {
             } catch is CancellationError {
             } catch {
                 self?.streamsEnded = true
-                self?.showError(message: "The shopping list stopped updating: \(error.localizedDescription)")
+                self?.showError(message: "The shopping list stopped syncing. Leave the app and come back to reconnect.")
+                Self.log.error("shopping stream ended: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -174,7 +195,9 @@ final class AppState {
             startListening(householdId: hid)
         }
         Task {
-            notificationsDenied = !(await services.notifications.isAuthorized())
+            let granted = await services.notifications.isAuthorized()
+            // Not asked yet isn't "denied": the prompt comes after the first item is added.
+            notificationsDenied = !granted && UserDefaults.standard.bool(forKey: Self.askedNotificationsKey)
             scheduleReconcile()
         }
     }
@@ -458,6 +481,7 @@ final class AppState {
             try await services.repository.saveItem(item, householdId: hid)
             upsertLocal(item)
             scheduleReconcile()
+            requestNotificationsIfNeeded()
             return true
         } catch {
             showError(error)
@@ -471,6 +495,7 @@ final class AppState {
             try await services.repository.saveItems(newItems, householdId: hid)
             newItems.forEach(upsertLocal)
             scheduleReconcile()
+            requestNotificationsIfNeeded()
             showMessage("Added \(newItems.count) item\(newItems.count == 1 ? "" : "s") from your receipt")
             return true
         } catch {
@@ -521,11 +546,16 @@ final class AppState {
         items[idx].count = newCount
     }
 
-    func delete(_ item: FridgeItem, ranOut: Bool = false) async {
+    func delete(_ item: FridgeItem, ranOut: Bool = false, undoable: Bool = false) async {
         guard let hid = householdId else { return }
         do {
             try await services.repository.deleteItem(id: item.id, householdId: hid)
             removedLocally(item, ranOut: ranOut)
+            if undoable && !ranOut {
+                showMessage("Deleted \(item.name)", actionTitle: "Undo") { [weak self] in
+                    Task { _ = await self?.save(item) }
+                }
+            }
         } catch {
             showError(error)
         }
@@ -593,7 +623,7 @@ final class AppState {
         Task {
             do {
                 try await services.repository.decideApproval(id: approval.id, approve: yes)
-                showMessage(yes ? "Done. The answer went to the household chat too." : "OK, not now.")
+                showMessage(yes ? "Done. The answer went to the household chat too." : "Got it. Answered no.")
             } catch { showError(error) }
         }
     }

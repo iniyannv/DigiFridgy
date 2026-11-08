@@ -157,7 +157,7 @@ async def _ask_owner(ctx: Ctx, hh: Household, member: Member, app_identity: str 
     from .brain import pending
     from .photon.outbound import notify_household
     if not member.welcomed or member.status != "active":
-        return ("This number already has a bank. Text the DigiFridgey line from that phone first, then "
+        return ("This number already has a bank. Text the DigiFridgy line from that phone first, then "
                 "connect again.")
     with Session(ctx.engine) as s:
         pending.create(s, hh.id, "claim", {"identity": app_identity, "code": (app_invite_code or "").strip().upper(),

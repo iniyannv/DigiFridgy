@@ -3,14 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DigiFridgey Remote</title>
+<title>DigiFridgy Remote</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5d6673; --line:#e2e5ea; --accent:#0b6bcb; --warn:#b54708; --ok:#067647; --bubble:#e9ebef; --me:#0b84ff; }
   @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d22; --ink:#eef0f3; --muted:#9aa3af; --line:#2a2f37; --accent:#5aa9ff; --warn:#f79009; --ok:#47cd89; --bubble:#262a31; --me:#0b84ff; } }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   header { padding:16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; }
-  h1 { font-size:18px; margin:0; }
+  h1 { font-size:18px; margin:0; display:flex; align-items:center; gap:8px; }
+  .mark { color:var(--accent); flex:none; }
+  button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
   .badge { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
   .badge.sim { color:var(--warn); border-color:var(--warn); }
   main { display:grid; gap:16px; padding:16px; grid-template-columns:1fr; max-width:1100px; margin:0 auto; }
@@ -18,10 +20,10 @@
   section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
   .row { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
-  button { font:inherit; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button { font:inherit; padding:8px 12px; min-height:44px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button:disabled { opacity:.5; cursor:wait; }
-  select, input { font:inherit; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); min-width:0; }
+  select, input { font:inherit; padding:8px; min-height:44px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); min-width:0; }
   .stats { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; }
   .stat { border:1px solid var(--line); border-radius:8px; padding:8px; }
   .stat b { display:block; font-size:18px; font-variant-numeric: tabular-nums; }
@@ -41,7 +43,7 @@
 </head>
 <body>
 <header>
-  <h1>🧊 DigiFridgey remote</h1>
+  <h1><svg class="mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 9h14M8.5 5v2M8.5 12v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> DigiFridgy remote</h1>
   <span id="now" class="badge">…</span>
   <span id="modes"></span>
 </header>
@@ -68,7 +70,7 @@
       <button data-act="sweep">Budget sweep offer</button>
       <button data-act="reset">Reset demo</button>
     </div>
-    <div id="log"></div>
+    <div id="log" role="status" aria-live="polite"></div>
   </section>
   <section>
     <h2>Household</h2>
@@ -85,8 +87,8 @@
   </section>
   <section id="chatbox" hidden style="grid-column:1/-1">
     <h2>SIMULATED iMessage (mock Photon) · <span id="who"></span></h2>
-    <div class="chat" id="chat"></div>
-    <form id="send"><input id="text" placeholder="Text the fridge, e.g. what's expiring?" autocomplete="off"><button class="primary">Send</button></form>
+    <div class="chat" id="chat" role="log" aria-live="polite"></div>
+    <form id="send"><input id="text" aria-label="Message to the fridge" placeholder="Text the fridge, e.g. what's expiring?" autocomplete="off"><button class="primary">Send</button></form>
   </section>
 </main>
 <script>

@@ -6,16 +6,19 @@ struct ItemConfirmationView: View {
     @Environment(AppState.self) private var app
     @State var draft: FridgeItem
     var usesSavedCorrections: Bool
+    /// True while the parent is saving: the button shows progress and can't be tapped twice.
+    var isSaving: Bool
     var onSave: (FridgeItem) -> Void
     var onRescan: () -> Void
 
     @State private var showDatePicker = false
     @State private var editingNutrition = false
 
-    init(draft: FridgeItem, usesSavedCorrections: Bool = false,
+    init(draft: FridgeItem, usesSavedCorrections: Bool = false, isSaving: Bool = false,
          onSave: @escaping (FridgeItem) -> Void, onRescan: @escaping () -> Void) {
         _draft = State(initialValue: draft)
         self.usesSavedCorrections = usesSavedCorrections
+        self.isSaving = isSaving
         self.onSave = onSave
         self.onRescan = onRescan
     }
@@ -39,7 +42,7 @@ struct ItemConfirmationView: View {
                 if usesSavedCorrections {
                     Label("Using your saved corrections for this barcode", systemImage: "checkmark.seal.fill")
                         .font(.footnote)
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Tone.success.color)
                 }
             }
 
@@ -109,9 +112,13 @@ struct ItemConfirmationView: View {
                 Button {
                     onSave(draft)
                 } label: {
-                    Text("Add to fridge").bold().frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        if isSaving { ProgressView() }
+                        Text(isSaving ? "Adding…" : "Add to fridge").bold()
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty || isSaving)
                 Button("Scan a different item", action: onRescan)
                     .frame(maxWidth: .infinity)
             }

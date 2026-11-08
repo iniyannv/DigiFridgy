@@ -7,6 +7,18 @@ nonisolated enum APIError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .badStatus(let code, _) where code == 429:
+            "That service is busy right now. Try again in a minute."
+        case .badStatus, .decoding:
+            "Something went wrong on the server. Try again in a minute."
+        case .notConfigured(let what):
+            "\(what) isn't available in this build."
+        }
+    }
+
+    /// Technical detail for the log and Settings → Developer.
+    var failureReason: String? {
+        switch self {
         case .badStatus(let code, let body):
             "Server returned \(code). \(body.prefix(140))"
         case .notConfigured(let what):

@@ -14,7 +14,7 @@ from .conftest import BASE, HANDLE, household, outbox_texts, run, text
 def test_first_message_registers_and_welcomes(seeded):
     ctx = seeded
     reply = text(ctx, "hello")
-    assert reply.startswith("👋 Hi! I'm DigiFridgey")
+    assert reply.startswith("👋 Hi! I'm DigiFridgy")
     with Session(ctx.engine) as s:
         m = s.exec(select(Member)).one()
         assert m.photon_handle == HANDLE and m.photon_space_id and m.agent_user_id

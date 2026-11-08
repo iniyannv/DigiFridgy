@@ -9,6 +9,7 @@ struct AddFromCardSheet: View {
     @State private var selected: [String: Set<Int>] = [:]
     @State private var loading = true
     @State private var error: String?
+    @State private var isAdding = false
 
     private var selectedCount: Int { selected.values.reduce(0) { $0 + $1.count } }
 
@@ -18,8 +19,11 @@ struct AddFromCardSheet: View {
                 if loading {
                     ProgressView()
                 } else if let error {
-                    ContentUnavailableView("Couldn't load card purchases", systemImage: "creditcard.trianglebadge.exclamationmark",
-                                           description: Text(error))
+                    EmptyStateView(symbol: "creditcard.trianglebadge.exclamationmark",
+                                   title: "Couldn't load card purchases",
+                                   message: "Check your connection and try again.",
+                                   primaryTitle: "Try again", primary: { Task { await load() } })
+                        .accessibilityHint(error)
                 } else if purchases.isEmpty {
                     ContentUnavailableView("No grocery purchases yet", systemImage: "creditcard",
                                            description: Text("Grocery purchases on your card from the last two weeks show up here."))
@@ -32,8 +36,12 @@ struct AddFromCardSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(selectedCount == 0 ? "Add" : "Add \(selectedCount)", action: add)
-                        .disabled(selectedCount == 0 || bank.isBusy)
+                    if isAdding {
+                        ProgressView()
+                    } else {
+                        Button(selectedCount == 0 ? "Add" : "Add \(selectedCount)", action: add)
+                            .disabled(selectedCount == 0 || bank.isBusy)
+                    }
                 }
             }
         }
@@ -53,7 +61,7 @@ struct AddFromCardSheet: View {
                     HStack {
                         Text(p.merchant)
                         Spacer()
-                        Text("\(shortDate(p.date)) · \(p.amount.formatted(.currency(code: "USD")))")
+                        Text("\(shortDate(p.date)) · \(p.amount.usd)")
                     }
                 } footer: {
                     if p.pendingCount > 0 {
@@ -77,10 +85,12 @@ struct AddFromCardSheet: View {
             selected[p.id] = set
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: line.isAdded ? "checkmark.circle.fill" : (isOn ? "checkmark.circle.fill" : "circle"))
+                Image(systemName: line.isAdded ? "refrigerator.fill" : (isOn ? "checkmark.circle.fill" : "circle"))
                     .foregroundStyle(line.isAdded ? Color.secondary : (isOn ? Color.accentColor : Color.secondary))
                     .font(.title3)
-                Text(line.emoji)
+                    .frame(width: 28)
+                    .accessibilityHidden(true)
+                Text(line.emoji).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(line.name + (line.qty > 1 ? " ×\(line.qty)" : ""))
                         .foregroundStyle(line.isAdded ? .secondary : .primary)
@@ -88,19 +98,25 @@ struct AddFromCardSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(line.total.formatted(.currency(code: "USD"))).monospacedDigit().foregroundStyle(.secondary)
+                Text(line.total.usd).monospacedDigit().foregroundStyle(.secondary)
             }
         }
         .buttonStyle(.plain)
         .disabled(line.isAdded)
+        .accessibilityAddTraits(isOn && !line.isAdded ? .isSelected : [])
     }
 
     private func shortDate(_ iso: String) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        guard let d = f.date(from: iso) else { return iso }
+        guard let d = Self.isoDay.date(from: iso) else { return iso }
         return d.formatted(.dateTime.month(.abbreviated).day())
     }
+
+    private static let isoDay: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 
     private func load() async {
         loading = true
@@ -118,7 +134,10 @@ struct AddFromCardSheet: View {
     }
 
     private func add() {
+        guard !isAdding else { return }
+        isAdding = true
         Task {
+            defer { isAdding = false }
             var messages: [String] = []
             do {
                 for p in purchases {

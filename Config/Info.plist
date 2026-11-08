@@ -8,7 +8,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>DigiFridgy connects to the DigiFridgey server on your network to link your bank and fridge.</string>
+	<string>DigiFridgy connects to the DigiFridgy server on your network to link your bank and fridge.</string>
 	<key>DigiFridgeyServer</key>
 	<string>$(DIGIFRIDGEY_SERVER)</string>
 	<key>DigiFridgeyToken</key>

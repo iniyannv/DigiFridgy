@@ -279,13 +279,13 @@ def group_welcome(name: str) -> str:
 def welcome(name: str, new: bool) -> str:
     if not new:
         return "👋 Welcome back! Reply FRIDGE, EXPIRING, LIST, MONEY, or HELP."
-    return ("👋 Hi! I'm DigiFridgey, your fridge, linked to your (demo) bank account.\n"
+    return ("👋 Hi! I'm DigiFridgy, your fridge, linked to your (demo) bank account.\n"
             f"You're in the {name}. When you buy groceries, I stock your fridge and text you "
             "before food goes bad.\n"
             "Try: FRIDGE, what's expiring?, I finished the milk, MONEY. HELP lists everything. STOP ends messages.")
 
 
-HELP = ("🧊 DigiFridgey commands\n"
+HELP = ("🧊 DigiFridgy commands\n"
         "FRIDGE · EXPIRING · DINNER\n"
         "USED <item> · TOSSED <item>\n"
         "LIST · ADD <item> · REMOVE <item> · ADD ALL\n"
@@ -298,7 +298,7 @@ HELP = ("🧊 DigiFridgey commands\n"
         "PRIVACY · STOP\n"
         "Or just ask: do I have eggs?")
 
-PRIVACY = ("🔒 DigiFridgey runs on synthetic demo bank data (Capital One's Nessie sandbox), not real accounts. "
+PRIVACY = ("🔒 DigiFridgy runs on synthetic demo bank data (Capital One's Nessie sandbox), not real accounts. "
            "We store your iMessage handle, this chat's ID, and your fridge items. "
            "Money never moves without your YES. Reply STOP to unlink and stop all messages.")
 

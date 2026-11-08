@@ -33,23 +33,17 @@ struct SettingsView: View {
                     Text("Stores")
                 }
 
-                Section {
-                    NavigationLink {
-                        ShoppingListView()
-                    } label: {
-                        LabeledContent("Shopping list", value: "\(app.shoppingList.filter { !$0.done }.count)")
-                    }
-                }
-
+                notificationsSection
                 checksSection
-                demoSection
-                BankDemoSection()
-                statusSection
 
-                Section {
-                    Text("API keys live in the app bundle for this hackathon demo only. A real release must proxy Edamam, Kroger and CalorieNinjas through a backend.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                if AppServices.isDemoBuild {
+                    Section {
+                        NavigationLink {
+                            developerPage
+                        } label: {
+                            Label("Developer & demo tools", systemImage: "hammer")
+                        }
+                    }
                 }
             }
             .navigationTitle("Settings")
@@ -112,11 +106,15 @@ struct SettingsView: View {
                         UIPasteboard.general.string = household.inviteCode
                         app.showMessage("Invite code copied")
                     } label: {
-                        Image(systemName: "doc.on.doc")
+                        Label("Copy invite code", systemImage: "doc.on.doc")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
                     }
                     .buttonStyle(.borderless)
                     ShareLink(item: "Join my DigiFridgy household “\(household.name)” with invite code \(household.inviteCode)") {
-                        Image(systemName: "square.and.arrow.up")
+                        Label("Share invite", systemImage: "square.and.arrow.up")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -126,7 +124,7 @@ struct SettingsView: View {
         } header: {
             Text("Household")
         } footer: {
-            Text("Everyone with the code shares one live fridge.")
+            Text("Share the code with roommates or family. Everyone with it sees the same fridge and shopping list, live.")
         }
     }
 
@@ -153,7 +151,7 @@ struct SettingsView: View {
                 Task { checksResult = await app.runChecks() }
             } label: {
                 HStack {
-                    Label("Run checks now", systemImage: "arrow.clockwise.circle")
+                    Label("Check for recalls and price drops", systemImage: "arrow.clockwise.circle")
                     Spacer()
                     if app.isRunningChecks { ProgressView() }
                 }
@@ -165,7 +163,7 @@ struct SettingsView: View {
         } header: {
             Text("Recalls & price drops")
         } footer: {
-            Text("Runs the same recall + watched-price check as the background refresh, which iOS schedules unpredictably.")
+            Text("DigiFridgy also checks in the background every few hours.")
         }
     }
 
@@ -197,27 +195,47 @@ struct SettingsView: View {
         }
     }
 
-    private var statusSection: some View {
-        Section {
-            if app.notificationsDenied {
+    @ViewBuilder
+    private var notificationsSection: some View {
+        if app.notificationsDenied {
+            Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("Notifications off", systemImage: "bell.slash.fill").foregroundStyle(.orange).bold()
-                    Text("Expiry reminders, recall and price alerts can't be shown. Turn notifications on for DigiFridgy in the Settings app.")
+                    Label("Reminders are off", systemImage: "bell.slash.fill").foregroundStyle(Tone.warning.color).bold()
+                    Text("You won't hear about food that's about to expire, recalls, or price drops. Turn on notifications for DigiFridgy in the Settings app.")
                         .font(.caption).foregroundStyle(.secondary)
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         Link("Open Settings", destination: url).font(.callout)
+                            .frame(minHeight: 44)
                     }
                 }
             }
+        }
+    }
+
+    /// Demo controls, service diagnostics and the bank server: one tap away for the demo, out of the main list.
+    private var developerPage: some View {
+        Form {
+            demoSection
+            BankDemoSection()
+            BankServerSection()
+            statusSection
+            Section {
+                Text("API keys live in the app bundle for this hackathon demo only. A real release must proxy Edamam, Kroger and CalorieNinjas through a backend.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Developer")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var statusSection: some View {
+        Section {
             ForEach(app.services.statusLines, id: \.0) { name, live in
-                HStack {
-                    Text(name)
-                    Spacer()
-                    Text(live ? "Live" : "Sample").font(.caption.bold())
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background((live ? Color.green : Color.orange).opacity(0.18), in: .capsule)
-                        .foregroundStyle(live ? .green : .orange)
+                LabeledContent(name) {
+                    StatusChip(text: live ? "Live" : "Sample", tone: live ? .success : .warning)
                 }
+                .accessibilityElement(children: .combine)
             }
             if let error = app.lastError {
                 VStack(alignment: .leading, spacing: 2) {

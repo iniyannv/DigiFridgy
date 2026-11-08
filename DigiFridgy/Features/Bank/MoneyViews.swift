@@ -5,10 +5,15 @@ import SwiftUI
 
 private func usd(_ value: Double) -> String { value.formatted(.currency(code: "USD")) }
 
-private func shortDate(_ iso: String) -> String {
+private let isoDay: DateFormatter = {
     let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
     f.dateFormat = "yyyy-MM-dd"
-    guard let d = f.date(from: iso) else { return iso }
+    return f
+}()
+
+private func shortDate(_ iso: String) -> String {
+    guard let d = isoDay.date(from: iso) else { return iso }
     return d.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
 }
 
@@ -22,7 +27,7 @@ struct StreakLine: View {
         if let text {
             Label(text, systemImage: streak.weeks > 0 ? "flame.fill" : "leaf")
                 .font(.caption)
-                .foregroundStyle(streak.weeks > 0 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                .foregroundStyle(streak.weeks > 0 ? AnyShapeStyle(Tone.warning.color) : AnyShapeStyle(.secondary))
         }
     }
 
@@ -103,8 +108,12 @@ struct PurchasesSection: View {
     var body: some View {
         Section {
             if loaded && purchases.isEmpty {
-                Text("Grocery purchases on your card from the last two weeks show up here.")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No grocery trips yet").font(.subheadline.weight(.semibold))
+                    Text("Grocery purchases on your card from the last two weeks will show up here.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
             }
             ForEach(purchases) { p in
                 NavigationLink { PurchaseDetailView(purchase: p) } label: {
@@ -164,7 +173,7 @@ struct PurchaseDetailView: View {
                     .padding(.vertical, 4)
                     ForEach(parts(b)) { p in
                         HStack(alignment: .firstTextBaseline) {
-                            Circle().fill(p.color).frame(width: 10, height: 10)
+                            Circle().fill(p.color).frame(width: 10, height: 10).accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(p.label)
                                 if let names = b.names[p.id], !names.isEmpty {
@@ -175,6 +184,7 @@ struct PurchaseDetailView: View {
                             Spacer()
                             Text(usd(p.value)).monospacedDigit()
                         }
+                        .accessibilityElement(children: .combine)
                     }
                 } header: {
                     Text("\(purchase.merchant) · \(shortDate(purchase.date))")
@@ -229,7 +239,7 @@ struct PurchaseDetailView: View {
             Text("Did you overpay?")
         } footer: {
             if !isLive {
-                Text("Live Kroger prices need KROGER_CLIENT_ID and KROGER_CLIENT_SECRET in Config/Secrets.xcconfig. Nothing here is estimated.")
+                Text("Price checks aren't available in this build.")
             } else if let compareError {
                 Text(compareError)
             } else if let store = krogerStore, !kroger.isEmpty {
@@ -249,9 +259,9 @@ struct PurchaseDetailView: View {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("Kroger \(usd(now))").font(.subheadline).monospacedDigit()
                     if paid - now >= 0.01 {
-                        Text("+\(usd(paid - now)) here").font(.caption).foregroundStyle(.orange)
+                        Text("+\(usd(paid - now)) here").font(.caption).foregroundStyle(Tone.warning.color)
                     } else {
-                        Text("you did fine").font(.caption).foregroundStyle(.green)
+                        Text("you did fine").font(.caption).foregroundStyle(Tone.success.color)
                     }
                 }
             } else {
@@ -305,22 +315,32 @@ struct RoommatesSection: View {
             if let s = bank.settle, s.roommates.count >= 2 {
                 let me = bank.household?.id
                 if s.debts.isEmpty {
-                    Label("Everyone's square", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
+                    Label("Everyone's square", systemImage: "checkmark.seal.fill").foregroundStyle(Tone.success.color)
                 }
                 ForEach(s.debts) { debt in row(debt, me: me) }
                 Text("Roommates: \(s.roommates.map(\.name).joined(separator: ", "))")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Each roommate connects their own bank with this household's invite code. When someone uses food another roommate paid for (−1 here, or USED by text), they owe that share.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Split groceries with roommates").font(.subheadline.weight(.semibold))
+                    Text("When roommates join with your invite code and connect their own card, DigiFridgy tracks who used what and who owes whom.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if let household = app.household {
+                        ShareLink(item: "Join my DigiFridgy household “\(household.name)” with invite code \(household.inviteCode)") {
+                            Label("Share invite code", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(.vertical, 4)
             }
         } header: {
             Text("Roommates")
         } footer: {
             if bank.settle?.app_uses_available == false {
-                Text("Uses by text count now. Taps in the app count once the updated SpacetimeDB module (server/) is published.")
+                Text("Food marked used by text counts toward the split. Taps in the app will count after the next update.")
             } else {
-                Text("Paying is a Nessie transfer from your checking to theirs, in whole dollars. Nothing moves until you confirm.")
+                Text("Paying sends whole dollars from your checking to theirs. Nothing moves until you confirm.")
             }
         }
         .confirmationDialog(confirming.map { "Send \($0.to_name) \(usd(Double($0.wholeDollars)))?" } ?? "",
@@ -379,13 +399,14 @@ struct RoommatesSection: View {
             Spacer()
             if debt.from_id == me {
                 Button("Pay") { confirming = debt }
-                    .buttonStyle(.glassProminent).controlSize(.small)
+                    .buttonStyle(.glassProminent)
                     .disabled(bank.isBusy || debt.amount < 1)
             } else if debt.to_id == me {
-                Button("Ask") {
+                Button("Remind") {
                     Task { do { app.showMessage(try await bank.ask(debt)) } catch { app.showError(error) } }
                 }
-                .buttonStyle(.bordered).controlSize(.small)
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Remind \(debt.from_name) to pay")
                 .disabled(bank.isBusy)
             }
         }

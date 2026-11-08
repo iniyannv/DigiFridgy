@@ -25,6 +25,21 @@ struct StoresTabView: View {
 
     var body: some View {
         NavigationStack {
+            Group {
+                if app.items.isEmpty && app.shoppingList.allSatisfy(\.done) {
+                    EmptyStateView(symbol: "cart",
+                                   title: "Nothing to price yet",
+                                   message: "Scan groceries or add to your shopping list, then compare prices at stores near you.")
+                } else {
+                    storesList
+                }
+            }
+            .navigationTitle("Stores")
+            .navigationDestination(for: PriceTarget.self) { PriceComparisonView(target: $0) }
+        }
+    }
+
+    private var storesList: some View {
             List {
                 let open = app.shoppingList.filter { !$0.done }
                 if !open.isEmpty {
@@ -37,9 +52,6 @@ struct StoresTabView: View {
                     }
                 }
                 Section {
-                    if app.items.isEmpty {
-                        Text("Scan items to compare their prices nearby.").foregroundStyle(.secondary)
-                    }
                     ForEach(app.sortedItems) { item in
                         NavigationLink(value: PriceTarget(item: item)) {
                             HStack(spacing: 12) {
@@ -51,6 +63,7 @@ struct StoresTabView: View {
                                 Spacer()
                                 if app.isWatched(item) {
                                     Image(systemName: "bell.badge.fill").foregroundStyle(.tint)
+                                        .accessibilityLabel("Price watched")
                                 }
                             }
                         }
@@ -59,13 +72,10 @@ struct StoresTabView: View {
                     Text("In your fridge")
                 } footer: {
                     Text(app.services.kroger.isLive
-                         ? "Kroger prices are live from the Kroger API. Other chains show real nearby locations with sample prices."
-                         : "Kroger API key not configured — all prices are samples.")
+                         ? "Kroger prices are live. Other stores are real nearby locations with sample prices."
+                         : "Prices are samples at real nearby stores.")
                 }
             }
-            .navigationTitle("Compare prices")
-            .navigationDestination(for: PriceTarget.self) { PriceComparisonView(target: $0) }
-        }
     }
 }
 
@@ -126,10 +136,28 @@ struct PriceComparisonView: View {
                     ForEach(0..<4, id: \.self) { _ in
                         QuoteRow(quote: Self.placeholderQuote, isCheapest: false).redacted(reason: .placeholder)
                     }
-                } else if let errorMessage, quotes.isEmpty {
-                    Label(errorMessage, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                } else if errorMessage != nil, quotes.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Couldn't load prices", systemImage: "exclamationmark.triangle")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Check your connection and try again.").font(.footnote).foregroundStyle(.secondary)
+                        Button("Try again") { Task { await load() } }.buttonStyle(.bordered)
+                    }
+                    .padding(.vertical, 4)
                 } else if quotes.isEmpty {
-                    Text("No stores within \(Int(radius)) miles. Try a larger radius.").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("No stores within \(Int(radius)) miles").font(.subheadline.weight(.semibold))
+                        Text("Widen your search to see more stores.").font(.footnote).foregroundStyle(.secondary)
+                        if radius < 25 {
+                            Button("Search 25 miles") {
+                                radius = 25
+                                app.setSearchRadius(radius)
+                                Task { await load() }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.vertical, 4)
                 } else {
                     ForEach(quotes) { quote in
                         Button {
@@ -220,7 +248,7 @@ struct PriceComparisonView: View {
             position = .automatic
         } catch {
             errorMessage = error.localizedDescription
-            app.showError(error)
+            if !quotes.isEmpty { app.showError(error) }
         }
     }
 
@@ -242,8 +270,8 @@ private struct QuoteRow: View {
     var isCheapest: Bool
 
     private var iconColor: Color {
-        if isCheapest { return .green }
-        return quote.availability == .live ? .blue : .secondary
+        if isCheapest { return Tone.success.color }
+        return quote.availability == .live ? Tone.info.color : .secondary
     }
 
     var body: some View {
@@ -251,6 +279,7 @@ private struct QuoteRow: View {
             Image(systemName: isCheapest ? "star.circle.fill" : (quote.store.isKroger ? "k.circle.fill" : "cart.circle.fill"))
                 .font(.title2)
                 .foregroundStyle(iconColor)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(quote.store.chain).font(.body.weight(.semibold))
@@ -261,7 +290,8 @@ private struct QuoteRow: View {
                 if quote.availability == .live, let description = quote.productDescription {
                     Text(description).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(String(format: "%.1f mi", quote.store.distanceMiles))
+                Text(Measurement(value: quote.store.distanceMiles, unit: UnitLength.miles)
+                    .formatted(.measurement(width: .abbreviated, numberFormatStyle: .number.precision(.fractionLength(1)))))
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
@@ -274,12 +304,12 @@ private struct QuoteRow: View {
                 case .failed:
                     Text("Price unavailable")
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                    Text("Kroger didn't respond").font(.caption2).foregroundStyle(.tertiary)
+                    Text("Try again later").font(.caption2).foregroundStyle(.tertiary)
                 case .live, .sample:
                     if let effective = quote.effectivePrice {
                         Text(effective.usd)
                             .font(.title3.weight(.bold).monospacedDigit())
-                            .foregroundStyle(isCheapest ? .green : .primary)
+                            .foregroundStyle(isCheapest ? Tone.success.color : .primary)
                     }
                     if let promo = quote.promoPrice, let price = quote.price, promo < price {
                         Text(price.usd).font(.caption).strikethrough().foregroundStyle(.secondary)
@@ -289,5 +319,8 @@ private struct QuoteRow: View {
             .multilineTextAlignment(.trailing)
         }
         .contentShape(.rect)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isCheapest ? .isSelected : [])
+        .accessibilityHint("Opens directions in Maps")
     }
 }

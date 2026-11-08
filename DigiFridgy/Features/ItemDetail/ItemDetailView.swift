@@ -42,15 +42,16 @@ struct ItemDetailView: View {
                     Button { showRecall = true } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(recall.title).bold()
-                                Text(recall.reason).font(.caption).lineLimit(2)
+                                Text(recall.title).bold().foregroundStyle(recall.tone.color)
+                                Text(recall.reason).font(.caption).lineLimit(2).foregroundStyle(.primary)
                             }
                         } icon: {
                             Image(systemName: recall.isPossible ? "questionmark.diamond.fill" : "exclamationmark.octagon.fill")
+                                .foregroundStyle(recall.tone.color)
                         }
-                        .foregroundStyle(.white)
                     }
-                    .listRowBackground(recall.isPossible ? Color.orange : Color.red)
+                    .accessibilityHint("Shows the recall notice")
+                    .listRowBackground(recall.tone.fill)
                 }
             }
 
@@ -58,7 +59,7 @@ struct ItemDetailView: View {
                 Section {
                     Label("Contains \(hits.map(\.displayName).joined(separator: ", ")) — on your allergen list",
                           systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Tone.warning.color)
                         .bold()
                 }
             }
@@ -92,7 +93,7 @@ struct ItemDetailView: View {
                 if item.isCardPurchase {
                     LabeledContent("Bought with card", value: item.store ?? "Card purchase")
                     if let price = item.price {
-                        LabeledContent("Price", value: "\(price.formatted(.currency(code: "USD"))) each")
+                        LabeledContent("Price", value: "\(price.usd) each")
                     }
                 } else {
                     LabeledContent("Source", value: item.source == .barcode ? "Barcode scan" : "Receipt scan")
@@ -106,9 +107,8 @@ struct ItemDetailView: View {
                     NutritionLabelView(nutrition: nutrition)
                         .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                 } else {
-                    Text("No nutrition data for this item.").foregroundStyle(.secondary)
+                    Text("No nutrition facts yet. Tap Edit to add them.").foregroundStyle(.secondary)
                 }
-                Button("Edit nutrition facts", systemImage: "pencil") { showEdit = true }
             }
 
             Section("Allergens") {
@@ -202,6 +202,7 @@ struct RecallDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppState.self) private var app
     var item: FridgeItem
+    @State private var confirmDiscard = false
 
     var body: some View {
         NavigationStack {
@@ -210,12 +211,12 @@ struct RecallDetailSheet: View {
                     Section {
                         if recall.isPossible {
                             Label("Possible recall: check the brand", systemImage: "questionmark.diamond.fill")
-                                .foregroundStyle(.orange).bold()
+                                .foregroundStyle(Tone.warning.color).bold()
                             Text("This notice matches the product name only. Compare the brand and codes on your package with the FDA notice.")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             Label("Do not eat this product", systemImage: "exclamationmark.octagon.fill")
-                                .foregroundStyle(.red).bold()
+                                .foregroundStyle(Tone.danger.color).bold()
                         }
                     }
                     Section("Reason") { Text(recall.reason) }
@@ -238,18 +239,23 @@ struct RecallDetailSheet: View {
                                 dismiss()
                             }
                         }
-                        Button("Discard item", systemImage: "trash", role: .destructive) {
-                            Task {
-                                await app.delete(item)
-                                dismiss()
-                            }
-                        }
+                        Button("Discard item", systemImage: "trash", role: .destructive) { confirmDiscard = true }
                     }
                 }
             }
             .navigationTitle("Recall")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .confirmationDialog("Discard \(item.name)?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+                Button("Discard", role: .destructive) {
+                    Task {
+                        await app.delete(item)
+                        dismiss()
+                    }
+                }
+            } message: {
+                Text("It's removed from the fridge for everyone in your household.")
+            }
         }
     }
 }

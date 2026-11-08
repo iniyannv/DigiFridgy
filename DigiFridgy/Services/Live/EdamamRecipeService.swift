@@ -9,41 +9,90 @@ final class EdamamRecipeService: RecipeService {
         self.api = api
     }
 
-    func search(queries: [String], healthLabels: [String], userId: String?) async throws -> [Recipe] {
-        guard Secrets.hasEdamam else { throw APIError.notConfigured("Edamam") }
-        let cacheKey = (queries + healthLabels).joined(separator: "|")
-        if let cached = cache.load(key: cacheKey, maxAge: 6 * 3600) { return cached }
+    /// Results per query when several run together, so the combined query can't crowd out the rest.
+    private static let perQueryLimit = 12
+    private static let totalLimit = 40
+    /// Edamam image links are signed for an hour; cached results older than that show broken images.
+    private static let freshness: TimeInterval = 50 * 60
 
-        var results: [Recipe] = []
-        var seen = Set<String>()
-        var lastError: (any Error)?
-        for query in queries where results.count < 20 {
-            do {
-                for recipe in try await fetch(query: query, healthLabels: healthLabels, userId: userId)
-                where seen.insert(recipe.id).inserted {
-                    results.append(recipe)
+    func search(_ request: RecipeSearchRequest, userId: String?) async throws -> [Recipe] {
+        guard Secrets.hasEdamam else { throw APIError.notConfigured("Edamam") }
+        let queries = Array(request.queries.prefix(3))
+        guard !queries.isEmpty else { return [] }
+        let limit = queries.count > 1 ? Self.perQueryLimit : Self.totalLimit
+
+        // Sequential, most useful query first: the free plan allows about ten calls a minute, so stop at the
+        // first rate-limit and show what already came back rather than spending more calls.
+        var lists: [[Recipe]] = []
+        var firstError: (any Error)?
+        var rateLimited = false
+        for query in queries {
+            if rateLimited {
+                // Out of calls for this minute: still use anything already cached.
+                if let cached = cache.load(key: Self.cacheKey(query: query, request: request), maxAge: Self.freshness) {
+                    lists.append(Array(cached.prefix(limit)))
                 }
+                continue
+            }
+            do {
+                lists.append(Array(try await cachedFetch(query: query, request: request, userId: userId).prefix(limit)))
             } catch {
-                lastError = error
+                firstError = firstError ?? error
+                if case APIError.badStatus(429, _) = error { rateLimited = true }
             }
         }
-        if results.isEmpty, let lastError {
-            // Serve stale cache rather than nothing.
-            if let stale = cache.load(key: cacheKey, maxAge: .infinity) { return stale }
-            throw lastError
+        if lists.isEmpty, let firstError { throw firstError }
+
+        // Round-robin: the first hit of every query, then the second of every query, and so on.
+        var results: [Recipe] = []
+        var seen = Set<String>()
+        for rank in 0..<(lists.map(\.count).max() ?? 0) {
+            for list in lists where rank < list.count && seen.insert(list[rank].id).inserted {
+                results.append(list[rank])
+            }
         }
-        // A partial result (some searches failed) isn't cached, or it would hide recipes for six hours.
-        if lastError == nil { cache.save(results, key: cacheKey) }
-        return results
+        return Array(results.prefix(Self.totalLimit))
     }
 
-    private func fetch(query: String, healthLabels: [String], userId: String?) async throws -> [Recipe] {
+    /// One query, served from a fresh cache entry when there is one. On failure a stale entry is better than nothing.
+    private func cachedFetch(query: String, request: RecipeSearchRequest, userId: String?) async throws -> [Recipe] {
+        let params = Self.filterParams(for: request)
+        let cacheKey = Self.cacheKey(query: query, request: request)
+        if let cached = cache.load(key: cacheKey, maxAge: Self.freshness) { return cached }
+        do {
+            let recipes = try await fetch(query: query, filterParams: params, userId: userId)
+            cache.save(recipes, key: cacheKey)
+            return recipes
+        } catch {
+            if let stale = cache.load(key: cacheKey, maxAge: .infinity) { return stale }
+            throw error
+        }
+    }
+
+    static func cacheKey(query: String, request: RecipeSearchRequest) -> String {
+        ([query] + filterParams(for: request).map { "\($0.0)=\($0.1)" }).joined(separator: "|")
+    }
+
+    /// Edamam filter parameters: allergen exclusions, diets, meal / dish / cuisine and a time range.
+    static func filterParams(for request: RecipeSearchRequest) -> [(String, String)] {
+        let filters = request.filters
+        var params: [(String, String)] = request.allergenLabels.sorted().map { ("health", $0) }
+        params += filters.diets.sorted { $0.rawValue < $1.rawValue }.map { ($0.edamamParam.name, $0.edamamParam.value) }
+        if let meal = filters.meal { params.append(("mealType", meal.edamamValue)) }
+        if let dish = filters.dish { params.append(("dishType", dish.edamamValue)) }
+        if let cuisine = filters.cuisine { params.append(("cuisineType", cuisine.edamamValue)) }
+        if let minutes = filters.maxMinutes { params.append(("time", "1-\(minutes)")) }
+        return params
+    }
+
+    private func fetch(query: String, filterParams: [(String, String)], userId: String?) async throws -> [Recipe] {
         var params: [(String, String)] = [
             ("type", "public"), ("q", query),
             ("app_id", Secrets.edamamAppID), ("app_key", Secrets.edamamAppKey),
         ]
-        params += healthLabels.map { ("health", $0) }
-        params += ["uri", "label", "image", "url", "source", "ingredients", "calories", "yield", "totalTime"]
+        params += filterParams
+        params += ["uri", "label", "image", "images", "url", "source", "ingredients", "calories", "yield", "totalTime",
+                   "mealType", "dishType", "cuisineType", "healthLabels", "dietLabels"]
             .map { ("field", $0) }
         let url = api.url("https://api.edamam.com/api/recipes/v2", query: params)
         // Plans without active-user tracking reject the Edamam-Account-User header (401), so send it
@@ -74,12 +123,24 @@ nonisolated struct EdamamResponse: Decodable, Sendable {
         var uri: String
         var label: String
         var image: String?
+        var images: Images?
         var url: String
         var source: String?
         var ingredients: [Ingredient]?
         var calories: Double?
         var yield: Double?
         var totalTime: Double?
+        var mealType: [String]?
+        var dishType: [String]?
+        var cuisineType: [String]?
+        var healthLabels: [String]?
+        var dietLabels: [String]?
+
+        struct Images: Decodable, Sendable {
+            struct Image: Decodable, Sendable { var url: String }
+            var LARGE: Image?
+            var REGULAR: Image?
+        }
 
         struct Ingredient: Decodable, Sendable {
             var text: String?
@@ -91,6 +152,7 @@ nonisolated struct EdamamResponse: Decodable, Sendable {
                 id: uri.components(separatedBy: "#recipe_").last ?? uri,
                 title: label,
                 imageURL: image,
+                largeImageURL: images?.LARGE?.url,
                 sourceURL: url,
                 sourceName: source,
                 ingredients: (ingredients ?? []).map {
@@ -98,7 +160,12 @@ nonisolated struct EdamamResponse: Decodable, Sendable {
                 },
                 calories: calories,
                 servings: yield,
-                totalTimeMinutes: (totalTime ?? 0) > 0 ? totalTime : nil
+                totalTimeMinutes: (totalTime ?? 0) > 0 ? totalTime : nil,
+                mealTypes: mealType,
+                dishTypes: dishType,
+                cuisineTypes: cuisineType,
+                healthLabels: healthLabels,
+                dietLabels: dietLabels
             )
         }
     }

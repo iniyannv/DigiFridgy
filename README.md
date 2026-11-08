@@ -115,7 +115,9 @@ Settings → **Services** shows which integrations are live vs mock.
 2. **Scan a receipt** (+ → Scan receipt → camera / photo / sample receipt) → review → 6+ items added.
 3. Open the **yogurt** → FDA-style nutrition label, Nutri-Score, milk allergen warning
    (turn on *Milk* in Settings → My allergens).
-4. **Recipes** tab → top recipe uses the spinach expiring tomorrow.
+4. **Recipes** tab → top recipe uses the spinach expiring tomorrow. Search ("tacos"), pick fridge
+   ingredients under **Cook with**, filter by meal / time / diet / cuisine, sort, and open a recipe to see what
+   you have and add the missing ingredients to the shopping list. Heart a recipe to keep it under **Saved**.
 5. Item → **Find cheapest nearby** → map + list; Kroger live price vs badged *Sample price* rows.
 6. Settings → **Simulate recall** → red banner on the item + notification.
 

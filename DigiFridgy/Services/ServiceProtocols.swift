@@ -80,8 +80,8 @@ protocol ProductLookupService: AnyObject, Sendable {
 }
 
 protocol RecipeService: AnyObject, Sendable {
-    /// Runs the queries in order (stopping once enough results are found) and returns de-duplicated recipes.
-    func search(queries: [String], healthLabels: [String], userId: String?) async throws -> [Recipe]
+    /// Runs the request's queries with its filters and returns de-duplicated recipes, mixed across queries.
+    func search(_ request: RecipeSearchRequest, userId: String?) async throws -> [Recipe]
 }
 
 protocol RecallService: AnyObject, Sendable {

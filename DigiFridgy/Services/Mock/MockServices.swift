@@ -197,18 +197,25 @@ final class MockProductLookupService: ProductLookupService {
 }
 
 final class MockRecipeService: RecipeService {
-    func search(queries: [String], healthLabels: [String], userId: String?) async throws -> [Recipe] {
+    func search(_ request: RecipeSearchRequest, userId: String?) async throws -> [Recipe] {
         try? await Task.sleep(for: .milliseconds(400))
-        let excluded = Set(healthLabels)
+        let excluded = Set(request.allergenLabels)
+        let words = Set(request.queries.flatMap { ShelfLifeService.tokenize($0) }.filter { $0.count >= 3 })
         return DemoData.recipes.filter { recipe in
             // Crude allergen filtering so the mock behaves like Edamam's health filters.
             let foods = recipe.ingredients.map(\.food).joined(separator: " ")
-            if excluded.contains("dairy-free"), foods.contains(anyOf: ["milk", "cheese", "yogurt", "butter", "cream"]) { return false }
+            if excluded.contains("dairy-free"), foods.contains(anyOf: ["milk", "cheese", "yogurt", "butter", "cream", "parmesan"]) { return false }
             if excluded.contains("egg-free"), foods.contains("egg") { return false }
-            if excluded.contains("gluten-free"), foods.contains(anyOf: ["tortilla", "bread", "pasta", "flour"]) { return false }
+            if excluded.contains("gluten-free"), foods.contains(anyOf: ["tortilla", "bread", "pasta", "flour", "noodle"]) { return false }
             if excluded.contains("peanut-free"), foods.contains("peanut") { return false }
             if excluded.contains("sesame-free"), foods.contains(anyOf: ["tahini", "sesame", "hummus"]) { return false }
-            return true
+            guard request.filters.admits(recipe) else { return false }
+            // Like a keyword search: some query word appears in the title or an ingredient.
+            let text = ShelfLifeService.tokenize(recipe.title + " " + foods).map { $0.hasSuffix("s") ? String($0.dropLast()) : $0 }
+            return words.isEmpty || words.contains { word in
+                let stem = word.hasSuffix("s") ? String(word.dropLast()) : word
+                return text.contains(stem)
+            }
         }
     }
 }

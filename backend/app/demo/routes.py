@@ -171,6 +171,7 @@ class MockText(BaseModel):
     handle: str = "+15555550123"
     text: str
     group: str | None = None  # name of a simulated group chat, e.g. "flat"
+    members: list[str] | None = None  # other people in that group (handles)
 
 
 @router.post("/mock/text", dependencies=[Depends(require_operator)])
@@ -179,7 +180,7 @@ async def mock_text(request: Request, body: MockText):
     ctx = _ctx(request)
     if not ctx.photon.is_mock:
         raise HTTPException(400, "Photon is live; text the agent from a real phone")
-    ctx.photon.inject(body.handle, body.text, group=body.group)
+    ctx.photon.inject(body.handle, body.text, group=body.group, members=body.members)
     await poll_once(ctx)
     if body.group:
         return {"conversation": [{"from": "agent", "text": m["text"], "at": m["createdAt"]}

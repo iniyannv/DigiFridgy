@@ -15,7 +15,7 @@ from ..models import PendingAction
 
 TTL_MINUTES = 30
 MONEY_KINDS = ("transfer", "settle")
-OTHER_YES_NO_KINDS = ("bulk_used", "nudge", "add_suggestions", "stock", "claim", "photo_stock")
+OTHER_YES_NO_KINDS = ("bulk_used", "nudge", "add_suggestions", "stock", "claim", "photo_stock", "recipe_missing")
 YES_NO_KINDS = MONEY_KINDS + OTHER_YES_NO_KINDS
 
 

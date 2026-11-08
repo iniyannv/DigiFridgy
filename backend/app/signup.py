@@ -135,6 +135,12 @@ async def signup_page() -> str:
 @router.post("/signup")
 async def signup(request: Request, body: SignupBody):
     ctx = request.app.state.ctx
+    token = ctx.settings.demo_token
+    if token:  # each sign-up uses a Photon seat, so guard it like the demo controls
+        import hmac
+        given = request.headers.get("x-demo-token") or request.query_params.get("token") or ""
+        if not hmac.compare_digest(given, token):
+            raise HTTPException(401, "This server needs the app's access token.")
     try:
         r = await sign_up(ctx, body.first_name, body.last_name, body.phone)
     except ValueError as exc:

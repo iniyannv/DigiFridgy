@@ -27,6 +27,9 @@ struct MainTabView: View {
             Tab("Fridge", systemImage: "refrigerator") {
                 InventoryView()
             }
+            Tab("Bank", systemImage: "building.columns") {
+                BankView()
+            }
             Tab("Recipes", systemImage: "fork.knife") {
                 RecipesView()
             }

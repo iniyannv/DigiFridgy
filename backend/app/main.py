@@ -23,6 +23,8 @@ from .voice.tools import router as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
+# httpx logs full request URLs, and Nessie's key is a query parameter: keep it out of logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @contextlib.asynccontextmanager

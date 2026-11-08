@@ -87,3 +87,11 @@ def test_signup_http(ctx):
     # Demo controls default to the newest signed-up household.
     st = c.get("/demo/state").json()
     assert st["household"]["name"] == "Maya's Household (0123)" and st["handle"] == "+14695550123"
+
+
+def test_signup_requires_token_when_set(ctx):
+    ctx.settings.demo_token = "tok"
+    c = TestClient(create_app(ctx))
+    body = {"first_name": "Maya", "phone": "(469) 555-0123"}
+    assert c.post("/signup", json=body).status_code == 401
+    assert c.post("/signup", json=body, headers={"x-demo-token": "tok"}).status_code == 200

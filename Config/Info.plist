@@ -2,6 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>DigiFridgy connects to the DigiFridgey server on your network to link your bank and fridge.</string>
+	<key>DigiFridgeyServer</key>
+	<string>$(DIGIFRIDGEY_SERVER)</string>
+	<key>DigiFridgeyToken</key>
+	<string>$(DIGIFRIDGEY_TOKEN)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>DigiFridgy uses the camera to scan barcodes and grocery receipts.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

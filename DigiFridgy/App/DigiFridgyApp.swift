@@ -4,6 +4,7 @@ import UserNotifications
 @main
 struct DigiFridgyApp: App {
     @State private var appState: AppState
+    @State private var bankStore = BankStore()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -17,6 +18,7 @@ struct DigiFridgyApp: App {
         WindowGroup {
             RootView()
                 .environment(appState)
+                .environment(bankStore)
                 .task { await appState.bootstrap() }
         }
         .onChange(of: scenePhase) { _, newPhase in

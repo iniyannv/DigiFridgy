@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 
 INTENTS = ("start", "fridge", "expiring", "used", "tossed", "list", "add", "remove", "add_all", "money",
-           "budget", "yes", "no", "choice", "dinner", "help", "stop", "privacy", "check", "unknown")
+           "budget", "yes", "no", "choice", "dinner", "help", "stop", "privacy", "check", "app", "link", "unknown")
 
 # Intents an LLM may return. Confirmations and opt-out are keyword-only.
 LLM_INTENTS = ("fridge", "expiring", "used", "tossed", "list", "add", "remove", "money", "budget",
@@ -38,6 +38,8 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
     ("start", r"^(start|hi|hello|hey|hiya|yo|sup|ping)( there)?( fridge| digifridgey)?$"),
     ("help", r"^(help|commands|menu|\?|what can you do)$"),
     ("privacy", r"^privacy( policy)?$"),
+    ("app", r"^(app|the app|invite|invite code|app code|code|share( (the|my) fridge)?)$"),
+    ("link", r"^(?:link|join|connect)(?: (?:to|with))?(?: (?:the )?app)?(?: code)? (?P<item>[a-z0-9]{6})$"),
     ("yes", r"^(yes|y|yep|yeah|yup|ya|sure|ok|okay|confirm|do it)$"),
     ("no", r"^(no|n|nope|nah|cancel|don't|dont|not now)$"),
     ("choice", r"^(?P<choice>[1-9])$"),

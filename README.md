@@ -7,12 +7,17 @@ food recalls.
 iOS 26 · Swift 6 · SwiftUI · `@Observable` · **SpacetimeDB 2.x** (household data, Rust module) · Firebase Auth
 (optional, for email sign-in) · no other third-party deps.
 
-## Backend: Nessie + Photon (iMessage)
+## iMessage + bank backend: Nessie + Photon
 
 [`backend/`](backend/README.md) is a Python FastAPI service that turns synthetic grocery
 transactions from Capital One's Nessie API into a fridge inventory and talks to you over iMessage
 through Photon: stock alerts, expiry nudges, food-waste dollars, and a YES-confirmed budget sweep
 into a Grocery Fund account. It runs offline with labeled mocks; see its README.
+
+It shares the app's fridge through SpacetimeDB: bank purchases appear in the app, items scanned in
+the app show up over iMessage, and "used" / "tossed" on either side updates the other. Text **APP**
+for the invite code to enter in the app's Join field, or **LINK <code>** to attach to a household
+that already exists in the app.
 
 ## Quick start (offline demo, no setup)
 
@@ -26,7 +31,7 @@ without keys use bundled sample data. For a fully offline demo, use **mock mode*
 argument (Edit Scheme → Arguments, already listed but disabled) or Settings → Demo tools. Mock mode keeps
 data on the device; OCR and notifications are still real.
 
-## Backend: SpacetimeDB
+## Data: SpacetimeDB
 
 The server module lives in [`server/spacetimedb/src/lib.rs`](server/spacetimedb/src/lib.rs) (Rust).
 

@@ -36,7 +36,12 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
             s.add(member)
             s.commit()
             s.refresh(member)
-        await send_reply(ctx, member, m.id, copy.welcome(hh.name, new=True))
+        welcome = copy.welcome(hh.name, new=True)
+        code = await _app_code(ctx, hh, announce=False)
+        if code:
+            from ..spacetime.bridge import app_invite_text
+            welcome += "\n" + app_invite_text(code)
+        await send_reply(ctx, member, m.id, welcome)
         return
 
     with Session(ctx.engine) as s:
@@ -111,7 +116,32 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent) -> str:
         return copy.dinner(await dinner_ideas(ctx, hh.id))
     if name == "check":
         return check_text(ctx, hh.id, intent.item or "")
+    if name == "app":
+        code = await _app_code(ctx, hh, announce=False)
+        if not code:
+            return copy.APP_OFF
+        from ..spacetime.bridge import app_invite_text
+        return app_invite_text(code)
+    if name == "link":
+        from ..spacetime.bridge import link_to_code
+        return await link_to_code(ctx, hh, intent.item or "")
     return copy.UNKNOWN
+
+
+async def _app_code(ctx: Ctx, hh: Household, announce: bool) -> str | None:
+    """The iPhone app invite code for this household (creates the app household on first use)."""
+    if ctx.spacetime is None:
+        return None
+    from ..spacetime import bridge
+    code = bridge.invite_code(ctx, hh.id)
+    if code:
+        return code
+    try:
+        link = await bridge.ensure_link(ctx, hh, announce=announce)
+    except Exception:
+        log.exception("couldn't create the app household for %s", hh.id)
+        return None
+    return link.invite_code or None
 
 
 # ---------- fridge ----------

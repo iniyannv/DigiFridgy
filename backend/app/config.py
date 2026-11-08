@@ -47,6 +47,10 @@ class Settings:
     database_url: str = f"sqlite:///{BACKEND_DIR / 'data' / 'digifridgey.db'}"
     mock_nessie_path: str = str(BACKEND_DIR / "data" / "mock_nessie.json")
     run_background: bool = True
+    # SpacetimeDB: the iOS app's database, so iMessage and the app share one fridge.
+    spacetime_host: str = ""
+    spacetime_db: str = ""
+    use_mock_spacetime: bool = True
 
     @property
     def tz(self) -> ZoneInfo:
@@ -59,6 +63,10 @@ class Settings:
     @property
     def scheduler_interval(self) -> float:
         return 5.0 if self.demo_mode else 60.0
+
+    @property
+    def spacetime_interval(self) -> float:
+        return 3.0 if self.demo_mode else 15.0
 
     @property
     def photon_poll_interval(self) -> float:
@@ -92,4 +100,7 @@ class Settings:
             database_url=e("DATABASE_URL", "") or cls.database_url,
             mock_nessie_path=e("MOCK_NESSIE_PATH", "") or cls.mock_nessie_path,
             run_background=_bool("RUN_BACKGROUND", True),
+            spacetime_host=e("SPACETIME_HOST", ""),
+            spacetime_db=e("SPACETIME_DB", ""),
+            use_mock_spacetime=_bool("USE_MOCK_SPACETIME", not (e("SPACETIME_HOST", "") and e("SPACETIME_DB", ""))),
         )

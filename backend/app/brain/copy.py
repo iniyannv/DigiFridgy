@@ -247,6 +247,7 @@ HELP = ("🧊 DigiFridgey commands\n"
         "LIST · ADD <item> · REMOVE <item> · ADD ALL\n"
         "MONEY · BUDGET <amount>\n"
         "YES / NO answers my questions\n"
+        "APP (invite code for the iPhone app) · LINK <code>\n"
         "PRIVACY · STOP\n"
         "Or just ask: do I have eggs?")
 
@@ -259,3 +260,5 @@ STOPPED = "You're unsubscribed. I won't text you again. Reply START anytime to c
 UNKNOWN = "Sorry, I didn't get that. Reply HELP for what I can do."
 
 NOT_TEXT = "I can only read text for now. Reply HELP for options."
+
+APP_OFF = "The iPhone app connection isn't set up on this server."

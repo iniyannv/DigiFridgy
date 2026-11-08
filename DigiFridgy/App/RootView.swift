@@ -37,6 +37,11 @@ final class TabBarScrollState {
 
 private struct ExpandsTabBarOnScrollUp: ViewModifier {
     @Environment(TabBarScrollState.self) private var tabBar: TabBarScrollState?
+    /// Distance scrolled in the current direction (negative = up), so a slow, slight scroll still counts.
+    @State private var travel: CGFloat = 0
+
+    /// How far up (in points) before the bar expands.
+    static let upThreshold: CGFloat = 10
 
     func body(content: Content) -> some View {
         content.onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -47,13 +52,20 @@ private struct ExpandsTabBarOnScrollUp: ViewModifier {
         } action: { old, new in
             guard let tabBar else { return }
             let delta = new - old
+            guard delta != 0 else { return }
+            // Start counting again whenever the direction changes.
+            travel = (travel < 0) == (delta < 0) ? travel + delta : delta
             if new <= 0 {
                 // At the top the system expands it anyway; hand control back.
                 if tabBar.scrollingUp { tabBar.scrollingUp = false }
-            } else if delta < -4, !tabBar.scrollingUp {
+            } else if travel <= -Self.upThreshold, !tabBar.scrollingUp {
                 tabBar.scrollingUp = true
-            } else if delta > 4, tabBar.scrollingUp {
-                tabBar.scrollingUp = false
+                // Once it has expanded, hand control back to the system so the very next scroll down
+                // minimizes it again (it stays expanded until then).
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(600))
+                    tabBar.scrollingUp = false
+                }
             }
         }
     }

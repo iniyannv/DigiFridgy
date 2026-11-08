@@ -3,6 +3,11 @@ import SwiftUI
 /// FDA-style "Nutrition Facts" panel.
 struct NutritionLabelView: View {
     var nutrition: Nutrition
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Black on white like a printed label; inverted (white on black) in dark mode so it doesn't glare.
+    private var ink: Color { colorScheme == .dark ? .white : .black }
+    private var paper: Color { colorScheme == .dark ? .black : .white }
 
     // FDA daily values (2,000 kcal diet).
     private enum DV {
@@ -48,17 +53,16 @@ struct NutritionLabelView: View {
                 .padding(.top, 2)
         }
         .padding(8)
-        .foregroundStyle(.black)
-        .background(.white)
-        .overlay(Rectangle().stroke(.black, lineWidth: 1.5))
-        .environment(\.colorScheme, .light)
+        .foregroundStyle(ink)
+        .background(paper)
+        .overlay(Rectangle().stroke(ink, lineWidth: 1.5))
     }
 
     private func bar(height: CGFloat) -> some View {
-        Rectangle().fill(.black).frame(height: height).padding(.vertical, 3)
+        Rectangle().fill(ink).frame(height: height).padding(.vertical, 3)
     }
 
-    private var thin: some View { Rectangle().fill(.black).frame(height: 0.75) }
+    private var thin: some View { Rectangle().fill(ink).frame(height: 0.75) }
 
     @ViewBuilder
     private func row(_ name: String, _ value: Double?, unit: String, dv: Double?,

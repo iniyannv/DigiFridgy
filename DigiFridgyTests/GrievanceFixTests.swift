@@ -145,3 +145,24 @@ struct BarcodeDemoTests {
         #expect(found?.brand == "Vital Farms")
     }
 }
+
+struct ShoppingQuantityTests {
+    @Test func entriesSavedWithoutAQuantityCountAsOne() throws {
+        let old = #"{"id":"a","name":"Milk","addedAt":0,"done":false}"#
+        let entry = try JSONDecoder().decode(ShoppingListItem.self, from: Data(old.utf8))
+        #expect(entry.count == 1 && entry.quantity == nil)
+
+        var two = entry
+        two.quantity = 2
+        let round = try JSONDecoder().decode(ShoppingListItem.self, from: JSONEncoder().encode(two))
+        #expect(round.count == 2)
+    }
+
+    @Test func basketLinesMultiplyByQuantity() {
+        let line = BasketLine(name: "Milk", price: 3.49, availability: .live).times(3)
+        #expect(line.quantity == 3)
+        #expect(abs((line.price ?? 0) - 10.47) < 0.001)
+        #expect(BasketLine(name: "Eggs", price: nil, availability: .notCarried).times(2).price == nil)
+    }
+
+}

@@ -153,10 +153,10 @@ struct RecipeDetailView: View {
         Section {
             ForEach(swaps, id: \.original) { swap in
                 HStack(spacing: 8) {
-                    Text(swap.original.capitalizedFirst).strikethrough().foregroundStyle(.secondary)
+                    Text("− \(swap.original)").strikethrough().bold().foregroundStyle(Tone.danger.color)
                     Image(systemName: "arrow.right").font(.caption).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
-                    Text(swap.replacement.capitalizedFirst).bold()
+                    Text("+ \(swap.replacement)").bold().foregroundStyle(Tone.success.color)
                     Spacer()
                 }
                 .accessibilityElement(children: .ignore)

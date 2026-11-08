@@ -23,12 +23,8 @@ struct RecipeCard: View {
                     usesText.font(.subheadline).lineLimit(2)
                 }
                 missingText.font(.caption).lineLimit(1)
-                if let swap = scored.recipe.swapSummary {
-                    Label(swap, systemImage: "arrow.triangle.2.circlepath")
-                        .labelStyle(CompactLabelStyle())
-                        .font(.caption)
-                        .foregroundStyle(Tone.info.color)
-                        .lineLimit(2)
+                if let swaps = scored.recipe.swaps, !swaps.isEmpty {
+                    Self.swapText(swaps).font(.caption).lineLimit(3)
                 }
                 // Time and calories always show; the expiring chip drops to its own line when space is short.
                 ViewThatFits(in: .horizontal) {
@@ -60,6 +56,17 @@ struct RecipeCard: View {
         .contentShape(.rect)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
+    }
+
+    /// "Substituting − chicken breast + extra-firm tofu": the removed ingredient in red, its replacement in green.
+    static func swapText(_ swaps: [IngredientSwap]) -> Text {
+        var result = Text("Substituting ").foregroundStyle(.secondary)
+        for (index, swap) in swaps.enumerated() {
+            let removed = Text("− \(swap.original)").foregroundStyle(Tone.danger.color).bold()
+            let added = Text(" + \(swap.replacement)").foregroundStyle(Tone.success.color)
+            result = Text("\(result)\(index > 0 ? Text(", ") : Text(""))\(removed)\(added)")
+        }
+        return result
     }
 
     /// Same wording on every card: "Uses 2 expiring".

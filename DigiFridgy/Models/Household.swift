@@ -78,6 +78,11 @@ nonisolated struct ShoppingListItem: Codable, Identifiable, Hashable, Sendable {
     var done: Bool = false
     /// Who said they'd buy it ("I'll grab milk"), from the app or the household's iMessage chat.
     var claimedBy: String?
+    /// How many to buy. Optional so entries saved before quantities (and by the iMessage backend) still decode.
+    var quantity: Int?
+
+    /// How many to buy (at least 1).
+    var count: Int { max(quantity ?? 1, 1) }
 }
 
 /// A question waiting on a person (from the iMessage agent): "Add these 6 items?", "Move $32 to the

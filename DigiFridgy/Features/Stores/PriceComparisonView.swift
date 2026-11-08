@@ -22,6 +22,7 @@ struct PriceTarget: Hashable {
 
 struct StoresTabView: View {
     @Environment(AppState.self) private var app
+    @State private var countChanges = 0
 
     static func footer(kroger: Bool, walmart: Bool) -> String {
         switch (kroger, walmart) {
@@ -53,32 +54,71 @@ struct StoresTabView: View {
             List {
                 let open = app.shoppingList.filter { !$0.done }
                 if !open.isEmpty {
-                    Section("Shopping list") {
+                    Section {
                         NavigationLink {
                             BasketComparisonView(entries: open)
                         } label: {
                             Label {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Price the whole list").font(.body.weight(.semibold))
-                                    Text("\(open.count) \(open.count == 1 ? "item" : "items") at stores near you, with \(SalesTax.rateText) tax")
+                                    let units = open.map(\.count).reduce(0, +)
+                                    Text("\(units) \(units == 1 ? "item" : "items") at stores near you, with \(SalesTax.rateText) tax")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             } icon: {
                                 Image(systemName: "storefront").foregroundStyle(.tint)
                             }
                         }
+                        // Same rows as the fridge and the shopping list: icon, ×count, price. Tap to compare stores.
                         ForEach(open) { entry in
                             NavigationLink(value: PriceTarget(name: entry.name, upc: entry.barcode)) {
-                                Label(entry.name, systemImage: "checklist")
+                                ShoppingRow(entry: entry, estimate: app.shoppingEstimate(entry), showsCheckbox: false)
+                            }
+                            .swipeActions(edge: .leading) {
+                                Button("Add one", systemImage: "plus.circle") {
+                                    countChanges += 1
+                                    app.adjustShoppingCount(entry, by: 1)
+                                }
+                                .tint(.green)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
+                                if entry.count > 1 {
+                                    Button("Remove one", systemImage: "minus.circle") {
+                                        countChanges += 1
+                                        app.adjustShoppingCount(entry, by: -1)
+                                    }
+                                    .tint(.orange)
+                                }
+                                Button("Bought", systemImage: "checkmark.circle") { app.toggleShoppingItem(entry) }
+                                    .tint(.blue)
+                            }
+                            .contextMenu {
+                                Button("Add one", systemImage: "plus.circle") { app.adjustShoppingCount(entry, by: 1) }
+                                if entry.count > 1 {
+                                    Button("Remove one", systemImage: "minus.circle") { app.adjustShoppingCount(entry, by: -1) }
+                                }
+                                Button("Bought", systemImage: "checkmark.circle") { app.toggleShoppingItem(entry) }
+                                Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
                             }
                         }
+                    } header: {
+                        HStack {
+                            Text("Shopping list")
+                            Spacer()
+                            NavigationLink("Edit list") { ShoppingListView() }
+                                .font(.subheadline)
+                                .textCase(nil)
+                        }
+                    } footer: {
+                        Text("Swipe right to add one more, left to remove one. Tap an item to compare its price.")
                     }
                 }
                 Section {
                     ForEach(app.sortedItems) { item in
                         NavigationLink(value: PriceTarget(item: item)) {
                             HStack(spacing: 12) {
-                                ItemThumbnail(item: item, size: 36)
+                                ItemThumbnail(item: item)
                                 VStack(alignment: .leading) {
                                     Text(item.name)
                                     if let brand = item.brand { Text(brand).font(.caption).foregroundStyle(.secondary) }
@@ -97,6 +137,7 @@ struct StoresTabView: View {
                     Text(Self.footer(kroger: app.services.kroger.isLive, walmart: app.services.walmart.isLive))
                 }
             }
+            .sensoryFeedback(.selection, trigger: countChanges)
             .expandsTabBarOnScrollUp()
     }
 }

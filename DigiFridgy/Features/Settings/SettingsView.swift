@@ -68,7 +68,12 @@ struct SettingsView: View {
             if let user = app.user {
                 if user.isAnonymous {
                     LabeledContent("Signed in as", value: "Guest")
-                    Button("Save account with email", systemImage: "person.crop.circle.badge.plus") { showLinkEmail = true }
+                    if app.services.auth.supportsEmail {
+                        Button("Save account with email", systemImage: "person.crop.circle.badge.plus") { showLinkEmail = true }
+                    } else {
+                        Text("Guest identity is stored on this device. Signing out loses access unless someone re-invites you.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 } else {
                     LabeledContent("Email", value: user.email ?? "—")
                 }

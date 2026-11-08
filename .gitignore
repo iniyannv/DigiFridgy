@@ -12,6 +12,9 @@ DigiFridgy/Resources/GoogleService-Info.plist
 
 .DS_Store
 
+# SpacetimeDB module build output
+server/spacetimedb/target/
+
 # Backend (Python)
 backend/.venv/
 backend/.env

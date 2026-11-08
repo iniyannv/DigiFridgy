@@ -50,26 +50,35 @@ final class AppServices {
         Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil
     }
 
-    /// Mock mode: `--mock` launch argument, the Settings toggle, running tests, or no Firebase config.
+    /// Mock mode: `--mock` launch argument, the Settings toggle, running tests, or no SpacetimeDB config.
     static var shouldUseMocks: Bool {
         ProcessInfo.processInfo.arguments.contains("--mock")
             || UserDefaults.standard.bool(forKey: mockDefaultsKey)
             || isRunningTests
-            || !hasFirebaseConfig
+            || !Secrets.hasSpacetime
     }
 
     static func makeDefault() -> AppServices {
-        if shouldUseMocks { return mock() }
-        if FirebaseApp.app() == nil { FirebaseApp.configure() }
-        return live()
+        guard !shouldUseMocks, let spacetime = SpacetimeClient.configured() else { return mock() }
+        return live(spacetime: spacetime)
     }
 
-    /// Live Firebase + APIs. Individual APIs whose keys are missing fall back to their mocks.
-    static func live() -> AppServices {
-        AppServices(
+    /// SpacetimeDB for household data. Sign-in uses Firebase Auth when GoogleService-Info.plist is present
+    /// (its ID token is the SpacetimeDB bearer token), otherwise a SpacetimeDB-issued identity.
+    /// Individual APIs whose keys are missing fall back to their mocks.
+    static func live(spacetime: SpacetimeClient) -> AppServices {
+        let auth: any AuthService
+        if hasFirebaseConfig {
+            if FirebaseApp.app() == nil { FirebaseApp.configure() }
+            auth = FirebaseAuthService()
+        } else {
+            auth = SpacetimeAuthService(client: spacetime)
+        }
+        spacetime.tokenProvider = { [weak auth] in try await auth?.idToken() }
+        return AppServices(
             isMock: false,
-            auth: FirebaseAuthService(),
-            repository: FirestoreHouseholdRepository(),
+            auth: auth,
+            repository: SpacetimeHouseholdRepository(client: spacetime),
             products: LiveProductLookupService(),
             recipes: Secrets.hasEdamam ? EdamamRecipeService() : MockRecipeService(),
             recalls: OpenFDARecallService(),
@@ -103,7 +112,8 @@ final class AppServices {
     /// Short human-readable status for Settings.
     var statusLines: [(String, Bool)] {
         [
-            ("Firebase (auth + sync)", !isMock),
+            ("SpacetimeDB (household sync)", !isMock),
+            ("Firebase Auth (email sign-in)", !isMock && Self.hasFirebaseConfig),
             ("Open Food Facts", !isMock),
             ("CalorieNinjas", !isMock && Secrets.hasCalorieNinjas),
             ("Edamam recipes", !isMock && Secrets.hasEdamam),

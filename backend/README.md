@@ -65,6 +65,28 @@ Checked against `prod-api.nessieisreal.com` with a real key:
   Checking plus a matching deposit into Grocery Fund.
 - Merchant `category` is a single string, and empty lists come back as 404.
 
+## Shared fridge with the iPhone app (SpacetimeDB)
+
+Set `SPACETIME_HOST` and `SPACETIME_DB` (already filled in `.env.example`) and the backend's fridge and
+the app's fridge become one. Code: [`app/spacetime/`](app/spacetime/bridge.py).
+
+- Each backend household signs in to SpacetimeDB with its own identity and creates an app household
+  on first sync. Members get its 6-character invite code in their welcome text (or reply **APP**) and
+  enter it in the app's **Join** field.
+- To use a household that already exists in the app, text **LINK <code>** with that household's code
+  (in the app under Settings → Household).
+- Every 3 s (15 s outside DEMO_MODE) the bridge syncs both ways. Bank purchases appear in the app;
+  items added in the app show up in FRIDGE, EXPIRING and nudges; USED / TOSSED here and −1 / delete in
+  the app update the other side.
+- The backend keeps one row per unit (needed for waste and sweeps) and the app one row per product with
+  a count. Sync is a three-way merge against the last agreed counts, so simultaneous edits on both
+  sides add up instead of overwriting each other. After an item exists, only counts flow from here to
+  the app; a printed expiry date set in the app updates the backend's units.
+- Removing an already-expired item in the app counts as tossed (its waste was recorded when it
+  expired). Items added in the app have no price, so they count $0 toward waste.
+- `/health` and the startup log show `spacetime: live | mock`. Without the two settings the sync runs
+  against an in-memory mock.
+
 ## Demo controls (`DEMO_MODE=true`)
 
 | Page button / endpoint | CLI | What it does |
@@ -86,7 +108,7 @@ Monday starts a new budget week, so "this week" spend resets to $0.
 
 ## Commands (always work, no LLM needed)
 
-`START` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
+`START` · `APP` (app invite code) · `LINK <code>` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
 `LIST` · `ADD <item>` · `REMOVE <item>` · `ADD ALL` · `MONEY` · `BUDGET 90` · `YES` / `NO` ·
 `1`/`2` (pick between matches) · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP`
 

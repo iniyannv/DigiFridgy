@@ -83,8 +83,8 @@ final class AppState {
             var profile = try await services.repository.profile(uid: user.uid) ?? UserProfile(uid: user.uid)
             if profile.displayName.isEmpty { profile.displayName = user.email?.components(separatedBy: "@").first ?? "Me" }
             self.profile = profile
-            if let hid = profile.householdId, let household = try await services.repository.household(id: hid),
-               household.memberUids.contains(user.uid) {
+            // The repository only returns households the caller is a member of.
+            if let hid = profile.householdId, let household = try await services.repository.household(id: hid) {
                 enterHousehold(household)
             } else {
                 phase = .householdSetup

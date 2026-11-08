@@ -25,6 +25,10 @@
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).refresh</string>
 	</array>
+	<key>SpacetimeHost</key>
+	<string>$(SPACETIME_HOST)</string>
+	<key>SpacetimeDatabase</key>
+	<string>$(SPACETIME_DB)</string>
 	<key>EdamamAppID</key>
 	<string>$(EDAMAM_APP_ID)</string>
 	<key>EdamamAppKey</key>

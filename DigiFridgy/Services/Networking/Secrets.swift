@@ -9,6 +9,10 @@ nonisolated enum Secrets {
     static var krogerClientSecret: String { value("KrogerClientSecret") }
     static var calorieNinjasKey: String { value("CalorieNinjasKey") }
 
+    static var spacetimeHost: String { value("SpacetimeHost") }
+    static var spacetimeDatabase: String { value("SpacetimeDatabase") }
+
+    static var hasSpacetime: Bool { !spacetimeHost.isEmpty && !spacetimeDatabase.isEmpty }
     static var hasEdamam: Bool { !edamamAppID.isEmpty && !edamamAppKey.isEmpty }
     static var hasKroger: Bool { !krogerClientID.isEmpty && !krogerClientSecret.isEmpty }
     static var hasCalorieNinjas: Bool { !calorieNinjasKey.isEmpty }

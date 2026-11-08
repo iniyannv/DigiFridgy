@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		D1F000000000000000000101 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = D1F000000000000000000201 /* FirebaseAuth */; };
-		D1F000000000000000000102 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = D1F000000000000000000202 /* FirebaseFirestore */; };
 		D1F000000000000000000103 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = D1F000000000000000000203 /* FirebaseCore */; };
 /* End PBXBuildFile section */
 
@@ -49,7 +48,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				D1F000000000000000000101 /* FirebaseAuth in Frameworks */,
-				D1F000000000000000000102 /* FirebaseFirestore in Frameworks */,
 				D1F000000000000000000103 /* FirebaseCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -114,7 +112,6 @@
 			name = DigiFridgy;
 			packageProductDependencies = (
 				D1F000000000000000000201 /* FirebaseAuth */,
-				D1F000000000000000000202 /* FirebaseFirestore */,
 				D1F000000000000000000203 /* FirebaseCore */,
 			);
 			productName = DigiFridgy;
@@ -456,11 +453,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D1F000000000000000001101 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseAuth;
-		};
-		D1F000000000000000000202 /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = D1F000000000000000001101 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
 		};
 		D1F000000000000000000203 /* FirebaseCore */ = {
 			isa = XCSwiftPackageProductDependency;

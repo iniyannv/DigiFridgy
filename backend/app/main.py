@@ -19,6 +19,7 @@ from .photon.inbound import poll_loop
 from .photon.webhook import router as webhook_router
 from .scheduler.jobs import scheduler_loop
 from .signup import router as signup_router
+from .spacetime.bridge import sync_loop as spacetime_loop
 from .voice.tools import router as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -31,21 +32,31 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     ctx = app.state.ctx
     st = ctx.settings
-    log.info("DigiFridgey starting | Nessie: %s | Photon: %s | LLM: %s | DEMO_MODE=%s",
+    log.info("DigiFridgey starting | Nessie: %s | Photon: %s | App sync (SpacetimeDB): %s | LLM: %s | DEMO_MODE=%s",
              "SIMULATED" if ctx.nessie.is_mock else "live",
              "SIMULATED" if ctx.photon.is_mock else "live",
-             st.llm_model if ctx.llm else "off (keywords only)", st.demo_mode)
+             _spacetime_label(ctx), st.llm_model if ctx.llm else "off (keywords only)", st.demo_mode)
     tasks = []
     if st.run_background:
         tasks = [asyncio.create_task(poll_loop(ctx), name="photon-poll"),
                  asyncio.create_task(sync_loop(ctx), name="nessie-sync"),
                  asyncio.create_task(scheduler_loop(ctx), name="scheduler")]
+        if ctx.spacetime is not None:
+            tasks.append(asyncio.create_task(spacetime_loop(ctx), name="spacetime-sync"))
     yield
     for t in tasks:
         t.cancel()
-    for client in (ctx.nessie, ctx.photon, ctx.llm):
+    for client in (ctx.nessie, ctx.photon, ctx.llm, ctx.spacetime):
         if client is not None:
             await client.close()
+
+
+def _spacetime_label(ctx) -> str:
+    if ctx.spacetime is None:
+        return "off"
+    if ctx.spacetime.is_mock:
+        return "SIMULATED"
+    return f"live ({ctx.settings.spacetime_db})"
 
 
 def create_app(ctx=None) -> FastAPI:
@@ -62,7 +73,8 @@ def create_app(ctx=None) -> FastAPI:
     @app.get("/health")
     async def health():
         return {"ok": True, "nessie": "mock" if ctx.nessie.is_mock else "live",
-                "photon": "mock" if ctx.photon.is_mock else "live", "llm": ctx.llm is not None}
+                "photon": "mock" if ctx.photon.is_mock else "live", "llm": ctx.llm is not None,
+                "spacetime": _spacetime_label(ctx).split(" ")[0].lower()}
 
     return app
 

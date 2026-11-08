@@ -4,14 +4,20 @@ A shared household fridge for iPhone (HackUTD 2026). Scan barcodes and grocery r
 expires first, get recipes that use it up, compare prices at nearby stores, and get alerted about
 food recalls.
 
-iOS 26 · Swift 6 · SwiftUI · `@Observable` · Firebase (Auth + Firestore) · no other third-party deps.
+iOS 26 · Swift 6 · SwiftUI · `@Observable` · **SpacetimeDB 2.x** (household data, Rust module) · Firebase Auth
+(optional, for email sign-in) · no other third-party deps.
 
-## Backend: Nessie + Photon (iMessage)
+## iMessage + bank backend: Nessie + Photon
 
 [`backend/`](backend/README.md) is a Python FastAPI service that turns synthetic grocery
 transactions from Capital One's Nessie API into a fridge inventory and talks to you over iMessage
 through Photon: stock alerts, expiry nudges, food-waste dollars, and a YES-confirmed budget sweep
 into a Grocery Fund account. It runs offline with labeled mocks; see its README.
+
+It shares the app's fridge through SpacetimeDB: bank purchases appear in the app, items scanned in
+the app show up over iMessage, and "used" / "tossed" on either side updates the other. Text **APP**
+for the invite code to enter in the app's Join field, or **LINK <code>** to attach to a household
+that already exists in the app.
 
 ## Quick start (offline demo, no setup)
 
@@ -19,30 +25,70 @@ into a Grocery Fund account. It runs offline with labeled mocks; see its README.
 open DigiFridgy.xcodeproj
 ```
 
-Run on an iPhone 17 simulator. Without `GoogleService-Info.plist` the app starts in **mock mode**
-automatically: data stays on the device, product lookups / recipes / prices use bundled sample data,
-and OCR + notifications are still real. You can also force mock mode with the `--mock` launch
-argument (Edit Scheme → Arguments, already listed but disabled) or Settings → Demo tools.
+Run on an iPhone 17 simulator. Out of the box the app talks to the published SpacetimeDB database
+(`digifridgy-hud4l` on Maincloud), and "Try it" signs in with an anonymous SpacetimeDB identity. APIs
+without keys use bundled sample data. For a fully offline demo, use **mock mode**: the `--mock` launch
+argument (Edit Scheme → Arguments, already listed but disabled) or Settings → Demo tools. Mock mode keeps
+data on the device; OCR and notifications are still real.
 
-## Full setup (live services)
+## Data: SpacetimeDB
 
-1. **Firebase** — create a project, add an iOS app with bundle id `com.iniyann.digifridgy`
-   (or change `PRODUCT_BUNDLE_IDENTIFIER`), download `GoogleService-Info.plist` into
-   `DigiFridgy/Resources/` (the folder is auto-included in the target; the file is gitignored).
-   Enable **Authentication → Email/Password and Anonymous**, and **Firestore**.
-2. **Firestore rules** — paste [`firestore.rules`](firestore.rules) into Firestore → Rules → Publish.
-3. **API keys** — `cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig` (already done once)
-   and fill in:
-   | Key | Where |
-   |---|---|
-   | `EDAMAM_APP_ID`, `EDAMAM_APP_KEY` | developer.edamam.com → Recipe Search API (developer plan) |
-   | `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET` | developer.kroger.com → register app, scope `product.compact` |
-   | `CALORIENINJAS_KEY` | calorieninjas.com/api |
+The server module lives in [`server/spacetimedb/src/lib.rs`](server/spacetimedb/src/lib.rs) (Rust).
 
-   Values must not contain `//` (xcconfig comment). Any key left empty falls back to its mock.
-   Open Food Facts and openFDA need no key.
-4. **Signing** — pick your (free) team under Signing & Capabilities to run on a phone.
-   Free provisioning profiles expire after 7 days.
+- **Tables (all private):** `user_profile`, `household`, `household_member`, `fridge_item`,
+  `shopping_item`, `price_history`. Item, profile and shopping payloads are the app's JSON in a `data`
+  column, so app models can change without a schema migration.
+- **Reads:** per-caller views `my_profile`, `my_household`, `my_items`, `my_shopping`, `my_prices`. A user
+  only ever sees their own household; outsiders get empty results.
+- **Writes:** reducers check membership against `ctx.sender()`: `save_profile`, `create_household`,
+  `join_household` (6-char invite code), `leave_household`, `upsert_item`, `upsert_items` (receipt batch),
+  `increment_count`, `delete_item`, `save_shopping_item`, `delete_shopping_item`, `save_price`.
+- **Client:** there's no official Swift SDK, so the app uses a small HTTP client
+  ([`SpacetimeClient.swift`](DigiFridgy/Services/Networking/SpacetimeClient.swift)). Reducers go through
+  `POST /v1/database/:db/call/:reducer` and views through `POST /v1/database/:db/sql`. Shared-fridge
+  updates arrive by polling the views every 2 s while the app is open, plus an immediate refresh after
+  each local write.
+
+Publish changes to the module:
+
+```bash
+cd server && spacetime publish --yes
+```
+
+Watch reducer errors and logs:
+
+```bash
+cd server && spacetime logs -f
+```
+
+Change the target server or database with `SPACETIME_HOST` / `SPACETIME_DB` in
+`Config/Secrets.xcconfig` (defaults in `Config/Base.xcconfig`; no `https://` because xcconfig treats
+`//` as a comment).
+
+## Sign-in
+
+- **Without Firebase** (default): "Try it" calls `POST /v1/identity` and keeps the SpacetimeDB token in
+  the Keychain. Email sign-in is hidden.
+- **With Firebase Auth:** add `GoogleService-Info.plist` to `DigiFridgy/Resources/` (gitignored) and
+  enable **Email/Password** and **Anonymous** sign-in in the Firebase console (Firestore isn't used). The
+  app then sends the Firebase ID token to SpacetimeDB as its OIDC bearer token. SpacetimeDB derives the
+  user's Identity from the token's `iss` + `sub`, so a user keeps the same household on every device.
+  *Not yet verified against Maincloud; if requests fail with "rejected the sign-in token", check
+  `spacetime logs`.*
+
+## API keys (optional)
+
+`cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig` (already done once) and fill in:
+
+| Key | Where |
+|---|---|
+| `EDAMAM_APP_ID`, `EDAMAM_APP_KEY` | [developer.edamam.com](https://developer.edamam.com/edamam-recipe-api), Recipe Search API (Developer plan) |
+| `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET` | [developer.kroger.com](https://developer.kroger.com/), register an app, scope `product.compact` |
+| `CALORIENINJAS_KEY` | [calorieninjas.com/api](https://calorieninjas.com/api) |
+
+Values must not contain `//`. Any key left empty falls back to its mock. Open Food Facts and openFDA
+need no key. To run on a phone, pick your (free) team under Signing & Capabilities; free provisioning
+profiles expire after 7 days.
 
 Settings → **Services** shows which integrations are live vs mock.
 
@@ -52,7 +98,7 @@ Settings → **Services** shows which integrations are live vs mock.
 ## Demo script (~3 min)
 
 1. **Scan** milk + yogurt barcodes (simulator: tap a test barcode in the scan sheet) → items appear
-   with an **Est.** expiry; a second device in the same household updates live.
+   with an **Est.** expiry; a second device that joined with the invite code updates within ~2 s.
 2. **Scan a receipt** (+ → Scan receipt → camera / photo / sample receipt) → review → 6+ items added.
 3. Open the **yogurt** → FDA-style nutrition label, Nutri-Score, milk allergen warning
    (turn on *Milk* in Settings → My allergens).
@@ -74,7 +120,8 @@ DigiFridgy/
   App/        DigiFridgyApp (entry, BG refresh), AppState (session + all mutations), AppServices (DI)
   Models/     FridgeItem, Nutrition/Allergen, Household/UserProfile, Recipe, Store/PriceQuote, Recall
   Services/   ServiceProtocols.swift — every service is a protocol with Live + Mock implementations
-    Live/       FirebaseAuth, Firestore repo, Open Food Facts + CalorieNinjas, Edamam, openFDA,
+    Networking/ APIClient, SpacetimeClient (HTTP reducers + view queries), Secrets, Keychain
+    Live/       SpacetimeDB repo + identity auth, FirebaseAuth, Open Food Facts + CalorieNinjas, Edamam, openFDA,
                 Kroger (OAuth2 client credentials), MapKit store search, Vision OCR,
                 Foundation Models receipt normalizer, local notifications
     Mock/       Offline implementations + DemoData (seed household, products, recipes)
@@ -84,21 +131,12 @@ DigiFridgy/
 Config/       Base.xcconfig (includes gitignored Secrets.xcconfig), Info.plist
 DigiFridgyTests/  Swift Testing: parser, shelf life mapping, recipe scoring, mock price determinism,
                   DTO decoding, recall matching
-firestore.rules
+server/       SpacetimeDB module (Rust): tables, per-caller views, membership-checked reducers
 ```
 
-Data flow: views read `AppState` from the environment; `AppState` calls services and owns the
-Firestore snapshot listener (`AsyncThrowingStream`) that keeps `items` live across household members.
-
-Firestore layout:
-
-```
-users/{uid}                         householdId, displayName, allergens, searchRadiusMiles, watchlist
-households/{hid}                    name, inviteCode, memberUids, createdAt
-households/{hid}/items/{id}         FridgeItem (nutrition + allergens snapshotted at scan time)
-households/{hid}/shopping/{id}      shopping list
-households/{hid}/priceHistory/{upc} lastPrice, lastStoreId, checkedAt
-```
+Data flow: views read `AppState` from the environment; `AppState` calls services and consumes the
+repository's `AsyncThrowingStream` of items, which polls the SpacetimeDB `my_items` view to stay live
+across household members.
 
 Expiry is **estimated** from category shelf life (approximating USDA FoodKeeper fridge times) and
 always labeled "Est." until the user sets the printed date.

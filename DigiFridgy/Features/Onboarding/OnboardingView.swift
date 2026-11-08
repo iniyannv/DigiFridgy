@@ -48,12 +48,14 @@ struct OnboardingView: View {
                         }
                         .buttonStyle(.glassProminent)
 
-                        Button {
-                            withAnimation { showEmail.toggle() }
-                        } label: {
-                            Text("Use email instead").frame(maxWidth: .infinity).padding(.vertical, 6)
+                        if app.services.auth.supportsEmail {
+                            Button {
+                                withAnimation { showEmail.toggle() }
+                            } label: {
+                                Text("Use email instead").frame(maxWidth: .infinity).padding(.vertical, 6)
+                            }
+                            .buttonStyle(.glass)
                         }
-                        .buttonStyle(.glass)
                     }
 
                     if showEmail {

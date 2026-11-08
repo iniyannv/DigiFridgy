@@ -7,6 +7,9 @@ import CoreGraphics
 final class MockAuthService: AuthService {
     private let key = "mock.authUser"
 
+    var supportsEmail: Bool { true }
+    func idToken() async throws -> String? { nil }
+
     var currentUser: AuthUser? {
         guard let dict = UserDefaults.standard.dictionary(forKey: key), let uid = dict["uid"] as? String else { return nil }
         return AuthUser(uid: uid, email: dict["email"] as? String, isAnonymous: dict["anon"] as? Bool ?? true)

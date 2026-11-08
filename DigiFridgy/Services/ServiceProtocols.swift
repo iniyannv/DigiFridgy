@@ -12,6 +12,10 @@ nonisolated struct AuthUser: Equatable, Sendable {
 
 protocol AuthService: AnyObject, Sendable {
     var currentUser: AuthUser? { get }
+    /// Whether email/password sign-in is available (Firebase only).
+    var supportsEmail: Bool { get }
+    /// OIDC token sent to SpacetimeDB as `Authorization: Bearer` (refreshed as needed).
+    func idToken() async throws -> String?
     func signInAnonymously() async throws -> AuthUser
     func signIn(email: String, password: String) async throws -> AuthUser
     func signUp(email: String, password: String) async throws -> AuthUser
@@ -97,4 +101,16 @@ protocol NotificationService: AnyObject, Sendable {
     func scheduleExpiryReminder(for item: FridgeItem)
     func cancelExpiryReminder(itemId: String)
     func notifyNow(id: String, title: String, body: String)
+}
+
+nonisolated enum HouseholdError: LocalizedError {
+    case codeNotFound
+    case noHousehold
+
+    var errorDescription: String? {
+        switch self {
+        case .codeNotFound: "No household found with that invite code."
+        case .noHousehold: "Join or create a household first."
+        }
+    }
 }

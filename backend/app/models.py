@@ -137,3 +137,34 @@ class NessieObject(SQLModel, table=True):
     __tablename__ = "nessie_objects"
     key: str = Field(primary_key=True)
     nessie_id: str
+
+
+# ---------- SpacetimeDB bridge (shared fridge with the iOS app) ----------
+
+class SpacetimeLink(SQLModel, table=True):
+    """The SpacetimeDB identity this household acts as, and the app household it belongs to."""
+    __tablename__ = "spacetime_links"
+    household_id: int = Field(primary_key=True)
+    identity: str
+    token: str
+    app_household_id: str = ""
+    invite_code: str = ""
+    linked_at: NaiveDatetime
+
+
+class SpaceItemLink(SQLModel, table=True):
+    """Which app item (FridgeItem id in SpacetimeDB) a backend unit row belongs to."""
+    __tablename__ = "spacetime_item_links"
+    item_id: int = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    external_id: str = Field(index=True)
+
+
+class SpaceSyncState(SQLModel, table=True):
+    """Last agreed unit counts per app item, the base for the three-way merge.
+    `count` = backend units after the last sync; `app_count` = app count we last saw or set."""
+    __tablename__ = "spacetime_sync_state"
+    external_id: str = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    count: int = 0
+    app_count: int = 0

@@ -30,7 +30,7 @@ from ..context import Ctx
 from ..fridge.shelf_life import find_by_words, lookup
 from ..fridge.matching import best_catalog_match
 from ..models import (Household, Item, ProcessedPurchase, ShoppingListItem, SpaceItemLink, SpaceListLink,
-                      SpaceSyncState, SpacetimeLink)
+                      SpaceSyncState, SpacetimeLink, UsageLog)
 from ..photon.outbound import notify_household
 
 log = logging.getLogger("spacetime")
@@ -299,7 +299,7 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
 
             # App-set expiry dates win for fresh units.
             if data is not None:
-                _apply_app_expiry(ctx, s, ext, data)
+                _apply_app_expiry(ctx, s, hh.id, ext, data)
 
             # App side (network calls run after the local commit)
             template = units[0] if units else (s.get(Item, all_links[ext]) if ext in all_links else None)
@@ -331,7 +331,8 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
             log.warning("SpacetimeDB %s(%s) failed: %s", reducer, ext, e)
             continue
         with Session(ctx.engine) as s:
-            row = s.get(SpaceSyncState, ext)
+            row = s.exec(select(SpaceSyncState).where(SpaceSyncState.household_id == hh.id,
+                                                      SpaceSyncState.external_id == ext)).first()
             if target == 0:
                 if row is not None:
                     s.delete(row)
@@ -340,7 +341,55 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                 s.add(row)
             s.commit()
     stats.update(await sync_list(ctx, hh, link))
+    stats["uses_logged"] = await push_uses(ctx, hh, link)
     return stats
+
+
+# ---------- who used what ----------
+#
+# USED over iMessage goes into SpacetimeDB's shared `item_use` log (reducer `log_use`), next to the
+# app's −1 taps (`use_item`), so every member sees who used what and settle-up has one record.
+
+_log_use_missing = False  # the published module predates `log_use`: don't retry every round
+
+
+async def push_uses(ctx: Ctx, hh: Household, link: SpacetimeLink) -> int:
+    global _log_use_missing
+    with Session(ctx.engine) as s:
+        rows = list(s.exec(select(UsageLog).where(UsageLog.household_id == hh.id, UsageLog.logged_at == None)))  # noqa: E711
+        if not rows:
+            return 0
+        exts = {l.item_id: l.external_id for l in s.exec(
+            select(SpaceItemLink).where(SpaceItemLink.item_id.in_([r.item_id for r in rows])))}
+        groups: dict[str, tuple[str, list[int]]] = {}
+        for r in rows:
+            ext = exts.get(r.item_id)
+            unit = s.get(Item, r.item_id)
+            if ext is None or unit is None:
+                continue  # not in the app (yet); the next round picks it up once linked
+            groups.setdefault(ext, (unit.name, []))[1].append(r.id)
+    if _log_use_missing:
+        sent = [i for _, ids in groups.values() for i in ids]
+    else:
+        sent = []
+        for ext, (name, ids) in groups.items():
+            try:
+                await ctx.spacetime.call(link.token, "log_use", [ext, len(ids), name])
+                sent += ids
+            except Exception as e:
+                if "log_use" in str(e) or "No such reducer" in str(e) or "404" in str(e):
+                    _log_use_missing = True
+                    log.info("SpacetimeDB module has no log_use yet; publish server/ to share iMessage uses")
+                    sent = [i for _, i2 in groups.values() for i in i2]
+                    break
+                log.warning("SpacetimeDB log_use(%s) failed: %s", ext, e)
+    if sent:
+        with Session(ctx.engine) as s:
+            for row in s.exec(select(UsageLog).where(UsageLog.id.in_(sent))):
+                row.logged_at = ctx.clock.now()
+                s.add(row)
+            s.commit()
+    return len(sent)
 
 
 # ---------- shopping list ----------
@@ -444,7 +493,8 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
             log.warning("SpacetimeDB delete_shopping_item(%s) failed: %s", ext, e)
             continue
         with Session(ctx.engine) as s:
-            l = s.exec(select(SpaceListLink).where(SpaceListLink.external_id == ext)).first()
+            l = s.exec(select(SpaceListLink).where(SpaceListLink.household_id == hh.id,
+                                                   SpaceListLink.external_id == ext)).first()
             if l is not None:
                 s.delete(l)
                 s.commit()
@@ -478,12 +528,13 @@ def _new_unit(ctx: Ctx, household_id: int, template: Item | None, data: str | No
                 source_purchase_id=t.source_purchase_id)
 
 
-def _apply_app_expiry(ctx: Ctx, s: Session, ext: str, data: str) -> None:
+def _apply_app_expiry(ctx: Ctx, s: Session, household_id: int, ext: str, data: str) -> None:
     app = json.loads(data)
     if app.get("expiryIsEstimated", True) or not app.get("expiresAt"):
         return
     expires = _from_ms(ctx, app["expiresAt"])
-    ids = [l.item_id for l in s.exec(select(SpaceItemLink).where(SpaceItemLink.external_id == ext))]
+    ids = [l.item_id for l in s.exec(select(SpaceItemLink).where(SpaceItemLink.household_id == household_id,
+                                                                  SpaceItemLink.external_id == ext))]
     for unit in s.exec(select(Item).where(Item.id.in_(ids), Item.status == "fresh")):
         if abs((unit.expires_at - expires).total_seconds()) > 3600:
             unit.expires_at = expires

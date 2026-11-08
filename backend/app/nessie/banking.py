@@ -70,9 +70,10 @@ async def offer_sweep(ctx: Ctx, hh: Household, key: str) -> str | None:
         if move < 1:
             text = copy.over_budget(ins)
         else:
+            from ..money import budget_streak
             pending.create(s, hh.id, "transfer", {"amount": move, "week": str(ctx.clock.week_start())},
                            ctx.clock.now())
-            text = copy.sweep_offer(under, move)
+            text = copy.sweep_offer(under, move, budget_streak(ctx, s, hh))
         s.commit()
     await notify_household(ctx, hh.id, text, key)
     return text

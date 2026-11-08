@@ -161,11 +161,13 @@ class SpaceItemLink(SQLModel, table=True):
 
 
 class SpaceSyncState(SQLModel, table=True):
-    """Last agreed unit counts per app item, the base for the three-way merge.
-    `count` = backend units after the last sync; `app_count` = app count we last saw or set."""
-    __tablename__ = "spacetime_sync_state"
+    """Last agreed unit counts per app item and bank household, the base for the three-way merge.
+    `count` = backend units after the last sync; `app_count` = app count we last saw or set.
+    Keyed per household: roommates' bank households share one app household, so one app item
+    has a sync state in each of them. (v2 table: v1 was keyed by item alone.)"""
+    __tablename__ = "spacetime_sync_state_v2"
+    household_id: int = Field(primary_key=True)
     external_id: str = Field(primary_key=True)
-    household_id: int = Field(index=True)
     count: int = 0
     app_count: int = 0
 
@@ -178,6 +180,36 @@ class SpaceListLink(SQLModel, table=True):
     household_id: int = Field(index=True)
     external_id: str = Field(index=True)
     done: bool = False
+
+
+class UsageLog(SQLModel, table=True):
+    """A unit this household used (USED over iMessage). The bridge copies it to SpacetimeDB's shared
+    `item_use` log (`logged_at`), and settle-up reads it to know who ate whose groceries."""
+    __tablename__ = "usage_log"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    household_id: int = Field(index=True)
+    item_id: int = Field(index=True)
+    used_at: NaiveDatetime
+    logged_at: Optional[NaiveDatetime] = None
+
+
+class AppMember(SQLModel, table=True):
+    """Which bank household an iPhone app user (SpacetimeDB identity) belongs to, from Connect your bank."""
+    __tablename__ = "app_members"
+    identity: str = Field(primary_key=True)  # lowercase hex, no 0x
+    household_id: int = Field(index=True)
+
+
+class Settlement(SQLModel, table=True):
+    """Money one roommate sent another for groceries (a Nessie transfer between their checking accounts)."""
+    __tablename__ = "settlements"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    app_household_id: str = Field(index=True)
+    from_household_id: int
+    to_household_id: int
+    amount: float
+    nessie_transfer_id: Optional[str] = None
+    settled_at: NaiveDatetime
 
 
 class CardPurchaseLine(SQLModel, table=True):

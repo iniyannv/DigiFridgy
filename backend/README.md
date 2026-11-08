@@ -119,7 +119,7 @@ Monday starts a new budget week, so "this week" spend resets to $0.
 ## Commands (always work, no LLM needed)
 
 `START` · `APP` (app invite code) · `LINK <code>` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
-`LIST` · `ADD <item>` · `REMOVE <item>` · `ADD ALL` · `MONEY` · `BUDGET 90` · `YES` / `NO` ·
+`LIST` · `ADD <item>` · `REMOVE <item>` · `ADD ALL` · `MONEY` · `BUDGET 90` · `TRIPS` · `SETTLE` · `YES` / `NO` ·
 `1`/`2` (pick between matches) · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP`
 
 With `LLM_API_KEY` set, Gemini classifies messages the keyword rules don't recognize and writes
@@ -128,6 +128,33 @@ dinner ideas. It can never produce YES, NO, STOP or ADD ALL; those must be typed
 Human-in-the-loop moments: ambiguous item → "Which milk? 1) … 2) …"; a whole category → confirm;
 any transfer → explicit YES (enforced by an atomic claim in `brain/pending.py`); one day before
 expiry → "Still have it?"; running out of a staple → "add it to your list?".
+
+## Grocery money, from the bank's side
+
+- **Where each purchase went.** Every grocery card charge splits into eaten, wasted, still in the fridge,
+  not added, and tax/other, adding up to the charge. Text `TRIPS` ("where did my money go?"); `MONEY`
+  includes the last trip. In the app: Grocery budget → *Where your grocery money went*, tap a trip for the
+  items in each part. With Kroger keys in the app, the trip also compares each line with today's live
+  price at the nearest Kroger ("Did you overpay?"). Without keys it shows nothing estimated.
+- **Savings streak.** Completed weeks in a row at or under the weekly budget, what budget sweeps moved
+  to the Grocery Fund, and whether this week's waste is lower than last week's. It's on the budget card,
+  in `MONEY`, and in the Sunday sweep offer.
+- **Budget-aware list.** `LIST` and the app's Shopping list estimate the trip from what the household (or
+  a roommate) last paid, against what's left of this week's budget. In the app, things never bought get a
+  typical price marked with `~`.
+- **Roommate settle-up.** Roommates each connect their own bank (their own Nessie customer) to the same
+  app household. A card purchase knows who paid; SpacetimeDB's `item_use` log (−1 in the app) and USED
+  by text say who ate it. Whoever ate a roommate's groceries owes them that share, netted both ways.
+  `SETTLE` shows the split and offers "Send Sam $8 from Everyday Checking? Reply YES"; the app's Pay button
+  does the same after a confirmation. Paying is a Nessie transfer between the two checking accounts, in
+  whole dollars (cents stay on the tab), recorded so it's never paid twice. The creditor can tap *Ask*
+  to text the debtor their split.
+
+Demo: Settings → Bank demo → *Add a roommate* creates Sam with their own card and a weekly basket
+(`POST /demo/roommate?app_household_id=…`), then *Sam uses…* simulates Sam texting USED
+(`POST /demo/roommate/use?household_id=…`). `GET /demo/settle`, `POST /demo/settle/pay` and
+`POST /demo/settle/ask` back the app. App −1 taps only count once the updated module in `server/` is
+published; USED by text counts either way.
 
 ## Voice (Photon number → ElevenLabs agent)
 
@@ -161,6 +188,7 @@ app/
   clock.py       the only "now"; demo time-skip is an offset stored in SQLite
   models.py      SQLite tables (households, members, items, list, waste, pending actions, …)
   households.py  provisions a synthetic Nessie customer + Everyday Checking + Grocery Fund
+  money.py       purchase breakdown, savings streak, list estimate, roommate settle-up
   nessie/        client.py (live + SIMULATED mock), sync.py (purchase → items → text), banking.py
   fridge/        parse.py (line items), shelf_life.json (~40 SKUs, approximate), inventory.py, matching.py
   photon/        client.py (REST + mock), inbound.py (guards, dedupe, poll), outbound.py, webhook.py

@@ -39,6 +39,11 @@ protocol HouseholdRepository: AnyObject, Sendable {
     func saveItems(_ items: [FridgeItem], householdId: String) async throws
     func incrementCount(itemId: String, by delta: Int, householdId: String) async throws
     func deleteItem(id: String, householdId: String) async throws
+    /// Someone in the household used `qty` of an item (−1). Records who used it where the backend supports it,
+    /// so roommates can split what they ate; removes the item when `remaining` reaches zero.
+    func useItem(id: String, qty: Int, name: String, remaining: Int, householdId: String) async throws
+    /// The signed-in user's identity in the household database (hex), when there is one.
+    var identityHex: String? { get }
 
     func shoppingStream(householdId: String) -> AsyncThrowingStream<[ShoppingListItem], any Error>
     func saveShoppingItem(_ item: ShoppingListItem, householdId: String) async throws
@@ -46,6 +51,18 @@ protocol HouseholdRepository: AnyObject, Sendable {
 
     func priceHistory(upc: String, householdId: String) async throws -> PriceHistory?
     func savePriceHistory(_ history: PriceHistory, householdId: String) async throws
+}
+
+extension HouseholdRepository {
+    func useItem(id: String, qty: Int, name: String, remaining: Int, householdId: String) async throws {
+        if remaining <= 0 {
+            try await deleteItem(id: id, householdId: householdId)
+        } else {
+            try await incrementCount(itemId: id, by: -qty, householdId: householdId)
+        }
+    }
+
+    var identityHex: String? { nil }
 }
 
 protocol ProductLookupService: AnyObject, Sendable {

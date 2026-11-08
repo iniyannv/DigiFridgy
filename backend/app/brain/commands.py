@@ -109,6 +109,11 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent) -> str:
         return add_all(ctx, hh.id)
     if name == "money":
         return money_text(ctx, hh.id)
+    if name == "settle":
+        from .. import money
+        return await money.offer(ctx, hh)
+    if name == "trips":
+        return trips_text(ctx, hh.id)
     if name == "budget":
         if not intent.amount:
             return money_text(ctx, hh.id)
@@ -255,7 +260,13 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool) -> str:
         p = pending.payload(a)
         kind, action_id = a.kind, a.id
 
-        if kind == "transfer":
+        if kind == "settle":
+            if not yes:
+                pending.set_status(s, a, "declined")
+                s.commit()
+                return "👍 OK, nothing sent. Reply SETTLE anytime."
+            s.commit()
+        elif kind == "transfer":
             if not yes:
                 pending.set_status(s, a, "declined")
                 s.commit()
@@ -309,7 +320,10 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool) -> str:
             s.commit()
             return copy.added([r.name for r in rows]) if yes and rows else "👍 OK, not adding it."
 
-    # Transfer YES: money moves only here, after an explicit typed YES.
+    # Money moves only here, after an explicit typed YES.
+    if kind == "settle":
+        from .. import money
+        return (await money.pay(ctx, p["app_household_id"], hh.id, int(p["to"]), action_id))[1]
     return await execute_transfer(ctx, hh, action_id, float(p["amount"]))
 
 
@@ -322,9 +336,14 @@ def _open_rows(s: Session, household_id: int) -> list[ShoppingListItem]:
 
 
 def list_text(ctx: Ctx, household_id: int) -> str:
+    from .. import money
     with Session(ctx.engine) as s:
         rows = _open_rows(s, household_id)
-        return copy.shopping_list([r for r in rows if r.confirmed], [r for r in rows if not r.confirmed])
+        active = [r for r in rows if r.confirmed]
+        hh = s.get(Household, household_id)
+        week_left = money.budget_streak(ctx, s, hh).week_left if hh and hh.checking_account_id else None
+        return copy.shopping_list(active, [r for r in rows if not r.confirmed],
+                                  money.list_estimate(s, household_id, active), week_left)
 
 
 def add_to_list(ctx: Ctx, household_id: int, raw: str, source: str = "manual") -> str:
@@ -380,9 +399,24 @@ def add_all(ctx: Ctx, household_id: int) -> str:
 # ---------- money / dinner / check ----------
 
 def money_text(ctx: Ctx, household_id: int) -> str:
+    from .. import money
     from ..nessie.banking import insight
     with Session(ctx.engine) as s:
-        return copy.money(insight(ctx, s, s.get(Household, household_id)))
+        hh = s.get(Household, household_id)
+        text = copy.money(insight(ctx, s, hh))
+        trips = money.recent_trips(ctx, s, household_id, limit=1)
+        if trips:
+            text += "\nLast trip: " + money.trip_line(trips[0])
+        return text + "\n" + copy.streak_line(money.budget_streak(ctx, s, hh))
+
+
+def trips_text(ctx: Ctx, household_id: int) -> str:
+    from .. import money
+    with Session(ctx.engine) as s:
+        trips = money.recent_trips(ctx, s, household_id, limit=3)
+    if not trips:
+        return "🧾 No grocery card purchases in the last two weeks."
+    return "🧾 Where your grocery money went\n" + "\n".join("• " + money.trip_line(t) for t in trips)
 
 
 def template_ideas(use_soon_skus: list[str], fresh_skus: set[str]) -> list[str]:

@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 from ..models import PendingAction
 
 TTL_MINUTES = 30
-YES_NO_KINDS = ("transfer", "bulk_used", "nudge", "add_suggestions", "stock")
+YES_NO_KINDS = ("transfer", "bulk_used", "nudge", "add_suggestions", "stock", "settle")
 
 
 def create(s: Session, household_id: int, kind: str, payload: dict, now, minutes: int = TTL_MINUTES) -> PendingAction:

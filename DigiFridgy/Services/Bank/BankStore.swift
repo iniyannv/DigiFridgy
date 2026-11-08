@@ -28,7 +28,64 @@ nonisolated struct BankHousehold: Decodable, Sendable {
     var checking_balance: Double?
     var fund_balance: Double?
     var app_household_id: String?
+    var streak: BankStreak?
+
+    var weekLeft: Double { streak?.week_left ?? (budget - week_spend) }
 }
+
+/// "Waste less, save more": completed weeks in a row under budget, and what budget sweeps saved.
+nonisolated struct BankStreak: Decodable, Sendable, Hashable {
+    var weeks: Int
+    var saved: Double
+    var week_left: Double
+    /// This week's waste minus last week's (negative = wasting less).
+    var waste_trend: Double
+}
+
+/// What happened to one card purchase. The parts add up to what the card was charged.
+nonisolated struct PurchaseBreakdown: Decodable, Sendable, Hashable {
+    var eaten: Double
+    var wasted: Double
+    var in_fridge: Double
+    var not_added: Double
+    var other: Double
+    var names: [String: [String]]
+}
+
+nonisolated struct SettleDebt: Decodable, Sendable, Identifiable, Hashable {
+    var from_id: Int
+    var to_id: Int
+    var from_name: String
+    var to_name: String
+    var amount: Double
+    var items: [String]
+    var id: String { "\(from_id)-\(to_id)" }
+}
+
+nonisolated struct SettleRoommate: Decodable, Sendable, Hashable, Identifiable {
+    var id: Int
+    var name: String
+}
+
+nonisolated struct SettleState: Decodable, Sendable {
+    var me: Int?
+    var app_uses_available: Bool
+    var roommates: [SettleRoommate]
+    var debts: [SettleDebt]
+}
+
+nonisolated struct SettleResult: Decodable, Sendable {
+    var ok: Bool?
+    var message: String
+}
+
+nonisolated struct RoommateResult: Decodable, Sendable {
+    var household_id: Int
+    var name: String
+    var stocked: Int
+}
+
+nonisolated struct RoommateUseResult: Decodable, Sendable { var reply: String }
 
 nonisolated struct BankState: Decodable, Sendable {
     var now_local: String
@@ -59,6 +116,7 @@ nonisolated struct CardPurchase: Decodable, Sendable, Identifiable {
     var date: String
     var amount: Double
     var lines: [CardLine]
+    var breakdown: PurchaseBreakdown?
     var id: String { purchase_id }
     var pendingCount: Int { lines.filter { $0.status != "stocked" }.count }
 }
@@ -122,6 +180,10 @@ final class BankStore {
 
     /// The app household (SpacetimeDB id) the bank is looked up by.
     private(set) var appHouseholdID: String?
+    /// This app user's SpacetimeDB identity: picks their own bank when roommates each connected one.
+    private(set) var appIdentity: String?
+    /// Who owes whom among the roommates sharing this fridge (nil until loaded or when offline).
+    private(set) var settle: SettleState?
     private(set) var status: Status = .unknown
     private(set) var state: BankState?
     var isBusy = false
@@ -185,10 +247,12 @@ final class BankStore {
     // MARK: - Household
 
     /// Keeps the bank in step with the app's household while the app is open.
-    func watch(appHouseholdID: String?) async {
+    func watch(appHouseholdID: String?, appIdentity: String?) async {
+        self.appIdentity = appIdentity
         if appHouseholdID != self.appHouseholdID {
             self.appHouseholdID = appHouseholdID
             state = nil
+            settle = nil
             status = .unknown
         }
         guard appHouseholdID != nil else { return }
@@ -202,12 +266,14 @@ final class BankStore {
     func refresh() async {
         guard let appHouseholdID else { return }
         do {
-            let s = try await APIClient.shared.get(
-                BankState.self, from: try url("/demo/state", [("app_household_id", appHouseholdID)]),
-                headers: authHeaders)
+            var query = [("app_household_id", appHouseholdID)]
+            if let appIdentity { query.append(("app_identity", appIdentity)) }
+            let s = try await APIClient.shared.get(BankState.self, from: try url("/demo/state", query),
+                                                   headers: authHeaders)
             guard appHouseholdID == self.appHouseholdID else { return }
             state = s
             status = s.household == nil ? .notLinked : .linked
+            if s.household != nil { await refreshSettle() }
         } catch is CancellationError {
         } catch {
             if (error as? URLError)?.code == .cancelled { return }
@@ -224,6 +290,7 @@ final class BankStore {
         defer { isBusy = false }
         var body = ["first_name": firstName, "phone": phone, "app_invite_code": inviteCode]
         if !lastName.isEmpty { body["last_name"] = lastName }
+        if let appIdentity { body["app_identity"] = appIdentity }
         let r: BankSignupResponse
         do {
             r = try await post("/signup", body: body, as: BankSignupResponse.self)
@@ -288,6 +355,59 @@ final class BankStore {
         } catch {
             throw BankError(message: message(for: error))
         }
+    }
+
+    // MARK: - Roommates
+
+    private var settleQuery: [(String, String)] {
+        guard let appHouseholdID, let me = household?.id else { return [] }
+        return [("app_household_id", appHouseholdID), ("household_id", String(me))]
+    }
+
+    func refreshSettle() async {
+        guard !settleQuery.isEmpty else { return }
+        if let s = try? await APIClient.shared.get(SettleState.self, from: try url("/demo/settle", settleQuery),
+                                                   headers: authHeaders) {
+            settle = s
+        }
+    }
+
+    /// Sends a roommate what you owe them (a Nessie transfer). Call only after the person confirmed.
+    func pay(_ debt: SettleDebt) async throws -> String {
+        let r = try await guarded { try await self.post("/demo/settle/pay", query: self.settleQuery + [("to", String(debt.to_id))],
+                                                        as: SettleResult.self) }
+        await refresh()
+        if r.ok == false { throw BankError(message: r.message) }
+        return r.message
+    }
+
+    /// Texts a roommate who owes you their split, with a YES to pay.
+    func ask(_ debt: SettleDebt) async throws -> String {
+        try await guarded { try await self.post("/demo/settle/ask", query: self.settleQuery + [("debtor", String(debt.from_id))],
+                                                as: SettleResult.self) }.message
+    }
+
+    /// Demo: a roommate with their own card joins this fridge and buys groceries.
+    func addRoommate(name: String) async throws -> String {
+        guard let appHouseholdID else { throw BankError(message: "Join a household first.") }
+        let r = try await guarded { try await self.post("/demo/roommate", query: [("app_household_id", appHouseholdID), ("name", name)],
+                                                        as: RoommateResult.self) }
+        await refresh()
+        return "\(r.name) joined with their own card and stocked \(r.stocked) items."
+    }
+
+    /// Demo: a roommate texts USED <item>.
+    func roommateUses(_ roommate: SettleRoommate, item: String) async throws -> String {
+        let r = try await guarded { try await self.post("/demo/roommate/use", query: [("household_id", String(roommate.id))],
+                                                        body: ["item": item], as: RoommateUseResult.self) }
+        await refresh()
+        return "\(roommate.name): \(r.reply)"
+    }
+
+    private func guarded<T>(_ work: @escaping () async throws -> T) async throws -> T {
+        isBusy = true
+        defer { isBusy = false }
+        do { return try await work() } catch { throw BankError(message: message(for: error)) }
     }
 
     private func run(_ work: @escaping () async throws -> BankActionResult) async throws -> BankActionResult {

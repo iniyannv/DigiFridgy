@@ -45,8 +45,18 @@ struct BankBudgetCard: View {
                  : "Nothing wasted this week")
                 .font(.caption)
                 .foregroundStyle(hh.week_waste > 0 ? .orange : .secondary)
+            if let streak = hh.streak { StreakLine(streak: streak) }
+            if let debt = myDebt {
+                Label("You owe \(debt.to_name) \(debt.amount.formatted(.currency(code: "USD")))",
+                      systemImage: "person.2").font(.caption).foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 4)
+    }
+
+    private var myDebt: SettleDebt? {
+        guard let me = bank.household?.id else { return nil }
+        return bank.settle?.debts.first { $0.from_id == me && $0.amount >= 1 }
     }
 
     private var connectPrompt: some View {
@@ -91,6 +101,8 @@ struct BankDetailView: View {
         List {
             if let hh = bank.household {
                 weekSection(hh)
+                PurchasesSection()
+                RoommatesSection()
                 fridgeSection
                 accountsSection(hh)
                 textSection(hh)
@@ -101,6 +113,7 @@ struct BankDetailView: View {
         }
         .navigationTitle("Grocery budget")
         .refreshable { await bank.refresh() }
+        .task { await bank.refreshSettle() }
     }
 
     private func weekSection(_ hh: BankHousehold) -> some View {
@@ -118,6 +131,7 @@ struct BankDetailView: View {
                      : "\((hh.budget - hh.week_spend).formatted(.currency(code: "USD"))) left this week")
                     .font(.subheadline)
                     .foregroundStyle(hh.week_spend > hh.budget ? .orange : .secondary)
+                if let streak = hh.streak { StreakLine(streak: streak) }
             }
             .padding(.vertical, 4)
             LabeledContent("Wasted this week") {
@@ -373,6 +387,21 @@ struct BankDemoSection: View {
                 }
                 .buttonStyle(.bordered)
                 Button("Send budget sweep offer", systemImage: "banknote") { act { try await bank.sweep() } }
+                if others.isEmpty {
+                    Button("Add a roommate (Sam, own card)", systemImage: "person.badge.plus") {
+                        act { try await bank.addRoommate(name: "Sam") }
+                    }
+                } else {
+                    ForEach(others) { mate in
+                        Menu {
+                            ForEach(Array(Set(app.items.map(\.name))).sorted(), id: \.self) { name in
+                                Button(name) { act { try await bank.roommateUses(mate, item: name) } }
+                            }
+                        } label: {
+                            Label("\(mate.name) uses…", systemImage: "fork.knife")
+                        }
+                    }
+                }
             } header: {
                 Text("Bank demo")
             } footer: {
@@ -382,6 +411,10 @@ struct BankDemoSection: View {
             }
             .disabled(bank.isBusy)
         }
+    }
+
+    private var others: [SettleRoommate] {
+        (bank.settle?.roommates ?? []).filter { $0.id != bank.household?.id }
     }
 
     private func act(_ work: @escaping () async throws -> String) {

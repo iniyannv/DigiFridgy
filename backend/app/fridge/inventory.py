@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlmodel import Session, select
 
 from ..clock import Clock
-from ..models import Item, ShoppingListItem, WasteEntry
+from ..models import Item, ShoppingListItem, UsageLog, WasteEntry
 from .parse import LineItem
 from .shelf_life import lookup, staples
 
@@ -54,6 +54,8 @@ def mark(s: Session, items: list[Item], status: str, now: datetime) -> float:
         s.add(it)
         if status == "tossed":
             wasted += record_waste(s, it, "tossed", now)
+        elif status == "used" and it.id is not None:
+            s.add(UsageLog(household_id=it.household_id, item_id=it.id, used_at=now))
     s.flush()
     return round(wasted, 2)
 

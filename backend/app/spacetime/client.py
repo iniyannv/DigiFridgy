@@ -116,6 +116,7 @@ class _MockHousehold:
     members: set[str] = field(default_factory=set)
     items: dict[str, dict] = field(default_factory=dict)  # id -> {"count", "data"}
     shopping: dict[str, str] = field(default_factory=dict)  # id -> data
+    uses: list[dict] = field(default_factory=list)          # my_item_uses rows
 
 
 class MockSpacetimeClient:
@@ -180,6 +181,19 @@ class MockSpacetimeClient:
             item["count"] = max(0, item["count"] + delta)
         elif reducer == "delete_item":
             self._hh(token).items.pop(args[0], None)
+        elif reducer in ("use_item", "log_use"):
+            item_id, qty, name = args
+            hh = self._hh(token)
+            if reducer == "use_item":
+                item = hh.items.get(item_id)
+                if item is None:
+                    raise SpacetimeError("530: Item not found.")
+                qty = max(1, min(qty, item["count"] or 1))
+                item["count"] -= qty
+                if item["count"] <= 0:
+                    hh.items.pop(item_id)
+            hh.uses.append({"id": len(hh.uses) + 1, "item_id": item_id, "name": name, "qty": qty,
+                            "used_by_hex": me, "used_at_ms": 0})
         elif reducer == "save_shopping_item":
             entry_id, data = args
             self._hh(token).shopping[entry_id] = data
@@ -198,6 +212,8 @@ class MockSpacetimeClient:
         if "my_items" in sql:
             return [{"id": k, "count": v["count"], "data": v["data"], "updated_at_ms": 0}
                     for k, v in hh.items.items()]
+        if "my_item_uses" in sql:
+            return [dict(u) for u in hh.uses]
         if "my_shopping" in sql:
             return [{"id": k, "data": v} for k, v in hh.shopping.items()]
         if "my_household" in sql:

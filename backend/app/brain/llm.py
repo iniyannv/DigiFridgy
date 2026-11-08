@@ -29,6 +29,8 @@ Intents:
 - add: wants an item added to the shopping list (item)
 - remove: wants an item removed from the shopping list (item)
 - money: asks about grocery spending, budget status, or food waste in dollars
+- settle: asks who owes whom between roommates, or wants to split or settle up grocery costs
+- trips: asks what happened to the groceries from recent store trips (eaten, wasted, still in the fridge)
 - budget: sets a weekly grocery budget (amount = number of dollars)
 - dinner: wants meal or recipe ideas
 - check: asks whether they have or need an item (item)

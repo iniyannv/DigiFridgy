@@ -401,8 +401,20 @@ final class AppState {
     func adjustCount(_ item: FridgeItem, by delta: Int) async {
         guard let hid = householdId else { return }
         let newCount = item.count + delta
-        if newCount <= 0 {
-            await delete(item, ranOut: true)
+        if delta < 0 {
+            // Using food up is recorded as yours, so roommates can split what each of them ate.
+            do {
+                try await services.repository.useItem(id: item.id, qty: min(-delta, item.count), name: item.name,
+                                                       remaining: newCount, householdId: hid)
+            } catch {
+                showError(error)
+                return
+            }
+            if newCount <= 0 {
+                removedLocally(item, ranOut: true)
+            } else if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                items[idx].count = newCount
+            }
             return
         }
         do {
@@ -417,17 +429,21 @@ final class AppState {
         guard let hid = householdId else { return }
         do {
             try await services.repository.deleteItem(id: item.id, householdId: hid)
-            items.removeAll { $0.id == item.id }
-            services.notifications.cancelExpiryReminder(itemId: item.id)
-            if ranOut {
-                services.notifications.notifyNow(id: "runout-\(item.id)", title: "You're out of \(item.name)",
-                                                 body: "Add it to the shopping list?")
-                showMessage("Out of \(item.name)", actionTitle: "Add to list") { [weak self] in
-                    self?.addToShoppingList(name: item.name, barcode: item.barcode)
-                }
-            }
+            removedLocally(item, ranOut: ranOut)
         } catch {
             showError(error)
+        }
+    }
+
+    private func removedLocally(_ item: FridgeItem, ranOut: Bool) {
+        items.removeAll { $0.id == item.id }
+        services.notifications.cancelExpiryReminder(itemId: item.id)
+        if ranOut {
+            services.notifications.notifyNow(id: "runout-\(item.id)", title: "You're out of \(item.name)",
+                                             body: "Add it to the shopping list?")
+            showMessage("Out of \(item.name)", actionTitle: "Add to list") { [weak self] in
+                self?.addToShoppingList(name: item.name, barcode: item.barcode)
+            }
         }
     }
 

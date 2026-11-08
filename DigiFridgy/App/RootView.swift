@@ -41,6 +41,8 @@ struct MainTabView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        .task(id: app.householdId) { await bank.watch(appHouseholdID: app.householdId) }
+        .task(id: app.householdId) {
+            await bank.watch(appHouseholdID: app.householdId, appIdentity: app.services.repository.identityHex)
+        }
     }
 }

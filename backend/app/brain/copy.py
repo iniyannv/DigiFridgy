@@ -114,13 +114,24 @@ def bulk_marked(n: int, category: str, status: str = "used") -> str:
     return f"✅ Marked {n} {category} items as {status}."
 
 
-def shopping_list(active, suggested) -> str:
+def shopping_list(active, suggested, estimate: tuple[float, int] | None = None,
+                  week_left: float | None = None) -> str:
     if not active and not suggested:
         return "🛒 Your list is empty. Reply ADD <item> to add something."
     out = []
     if active:
         out.append("🛒 Shopping list")
         out.extend(f"• {r.name}" for r in active)
+        if estimate and estimate[1]:
+            total, known = estimate
+            basis = "" if known == len(active) else f" for the {known} you've bought before"
+            line = f"≈ {usd(total)}{basis} at what you last paid"
+            if week_left is not None:
+                line += (f" · {usd(week_left)} left in this week's budget" if week_left >= 0
+                         else f" · already {usd(-week_left)} over this week's budget")
+                if 0 <= week_left < total:
+                    line += " ⚠️"
+            out.append(line)
     if suggested:
         if out:
             out.append("")
@@ -161,9 +172,26 @@ def budget_set(amount: float) -> str:
     return f"✅ Weekly grocery budget set to {usd(amount)}."
 
 
-def sweep_offer(under: float, move: float) -> str:
-    return (f"🏦 You're {usd(under)} under budget this week.\n"
-            f"Move {usd(move)} to Grocery Fund? Reply YES or NO.")
+def sweep_offer(under: float, move: float, streak=None) -> str:
+    text = f"🏦 You're {usd(under)} under budget this week.\n"
+    if streak is not None:
+        text += streak_line(streak, including_this_week=True) + "\n"
+    return text + f"Move {usd(move)} to Grocery Fund? Reply YES or NO."
+
+
+def streak_line(streak, including_this_week: bool = False) -> str:
+    """'Waste less, save more': weeks in a row under budget and what the sweeps saved."""
+    weeks = streak.weeks + (1 if including_this_week else 0)
+    parts = []
+    if weeks >= 2:
+        parts.append(f"🔥 {weeks} weeks in a row under budget")
+    elif weeks == 1:
+        parts.append("🔥 1 week under budget, keep it going")
+    if streak.saved:
+        parts.append(f"{usd(streak.saved)} saved to Grocery Fund so far")
+    if streak.waste_trend < -0.005:
+        parts.append(f"wasting {usd(-streak.waste_trend)} less than last week")
+    return " · ".join(parts) if parts else "Stay under budget this week to start a savings streak."
 
 
 def over_budget(ins) -> str:
@@ -254,7 +282,8 @@ HELP = ("🧊 DigiFridgey commands\n"
         "FRIDGE · EXPIRING · DINNER\n"
         "USED <item> · TOSSED <item>\n"
         "LIST · ADD <item> · REMOVE <item> · ADD ALL\n"
-        "MONEY · BUDGET <amount>\n"
+        "MONEY · BUDGET <amount> · TRIPS\n"
+        "SETTLE (split groceries with roommates)\n"
         "YES / NO answers my questions\n"
         "APP (invite code for the iPhone app) · LINK <code>\n"
         "PRIVACY · STOP\n"

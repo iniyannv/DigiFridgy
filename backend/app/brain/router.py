@@ -7,11 +7,12 @@ import re
 from dataclasses import dataclass
 
 INTENTS = ("start", "fridge", "expiring", "used", "tossed", "list", "add", "remove", "add_all", "money",
-           "budget", "yes", "no", "choice", "dinner", "help", "stop", "privacy", "check", "app", "link", "unknown")
+           "budget", "yes", "no", "choice", "dinner", "help", "stop", "privacy", "check", "app", "link", "settle",
+           "trips", "unknown")
 
 # Intents an LLM may return. Confirmations and opt-out are keyword-only.
 LLM_INTENTS = ("fridge", "expiring", "used", "tossed", "list", "add", "remove", "money", "budget",
-               "dinner", "help", "privacy", "check", "unknown")
+               "dinner", "help", "privacy", "check", "settle", "trips", "unknown")
 
 
 @dataclass
@@ -48,6 +49,10 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
     ("expiring", r"^(expiring|use soon|what'?s expiring( soon)?|what is expiring( soon)?|anything expiring( soon)?"
                  r"|what'?s (going|about to go) bad|what expires( soon)?)$"),
     ("list", r"^(list|shopping list|grocery list|my list|show (me )?(my )?list|what'?s on (my |the )?list)$"),
+    ("settle", r"^(settle|settle up|split|splits|split (the )?groceries|iou|ious|who owes( who| me| what)?( money)?"
+               r"|what do i owe|do i owe (anyone|anybody|someone)( anything)?|roommates?|pay (my )?roommates?)$"),
+    ("trips", r"^(trips?|receipts?|purchases|last trip|where did (my|the|our) (grocery )?money go"
+              r"|what happened to (my|the|our) groceries)$"),
     ("money", r"^(money|spend|spending|insights?|budget|waste|wasted|how much (did i|have i) (spend|spent|waste|wasted).*)$"),
     ("budget", r"^(set )?(my )?(weekly )?budget (to )?\$?(?P<amount>\d+(?:\.\d{1,2})?)$"),
     ("dinner", r"^(dinner|recipes?|ideas|meal ideas|what should i (make|cook|eat)( tonight| for dinner)?"

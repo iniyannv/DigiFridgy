@@ -81,6 +81,22 @@ pub struct PriceHistory {
     pub checked_at: Timestamp,
 }
 
+/// Who used what: one row each time a member uses up part of an item (app −1, or USED over iMessage).
+/// It's the household's shared record for splitting grocery costs between roommates.
+#[table(accessor = item_use)]
+pub struct ItemUse {
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    #[index(btree)]
+    pub household_id: String,
+    pub item_id: String,
+    pub name: String,
+    pub qty: i32,
+    pub used_by: Identity,
+    pub used_at: Timestamp,
+}
+
 // MARK: - View rows (plain types so HTTP SQL results are simple JSON)
 
 #[derive(SpacetimeType)]
@@ -119,6 +135,16 @@ pub struct PriceRow {
     pub last_price: f64,
     pub last_store_id: String,
     pub checked_at_ms: i64,
+}
+
+#[derive(SpacetimeType)]
+pub struct ItemUseRow {
+    pub id: u64,
+    pub item_id: String,
+    pub name: String,
+    pub qty: i32,
+    pub used_by_hex: String,
+    pub used_at_ms: i64,
 }
 
 fn millis(t: Timestamp) -> i64 {
@@ -207,6 +233,24 @@ fn my_prices(ctx: &ViewContext) -> Vec<PriceRow> {
             last_price: p.last_price,
             last_store_id: p.last_store_id,
             checked_at_ms: millis(p.checked_at),
+        })
+        .collect()
+}
+
+#[view(accessor = my_item_uses, public)]
+fn my_item_uses(ctx: &ViewContext) -> Vec<ItemUseRow> {
+    let Some(hid) = view_household_id(ctx) else { return vec![] };
+    ctx.db
+        .item_use()
+        .household_id()
+        .filter(&hid)
+        .map(|u| ItemUseRow {
+            id: u.id,
+            item_id: u.item_id,
+            name: u.name,
+            qty: u.qty,
+            used_by_hex: u.used_by.to_hex().to_string(),
+            used_at_ms: millis(u.used_at),
         })
         .collect()
 }
@@ -397,6 +441,51 @@ pub fn increment_count(ctx: &ReducerContext, id: String, delta: i32) -> Result<(
     }
     let count = (item.count + delta).max(0);
     ctx.db.fridge_item().id().update(FridgeItem { count, updated_at: ctx.timestamp, ..item });
+    Ok(())
+}
+
+fn record_use(ctx: &ReducerContext, hid: &str, item_id: &str, name: &str, qty: i32) {
+    let name: String = name.chars().take(80).collect();
+    ctx.db.item_use().insert(ItemUse {
+        id: 0,
+        household_id: hid.to_string(),
+        item_id: item_id.to_string(),
+        name,
+        qty,
+        used_by: ctx.sender(),
+        used_at: ctx.timestamp,
+    });
+}
+
+/// The caller used `qty` of an item: lowers the count (removing the item at zero) and records who used it.
+#[reducer]
+pub fn use_item(ctx: &ReducerContext, id: String, qty: i32, name: String) -> Result<(), String> {
+    let hid = require_household(ctx)?;
+    let item = ctx.db.fridge_item().id().find(&id).ok_or("Item not found.")?;
+    if item.household_id != hid {
+        return Err("Item belongs to another household.".into());
+    }
+    let qty = qty.clamp(1, item.count.max(1));
+    record_use(ctx, &hid, &id, &name, qty);
+    let count = item.count - qty;
+    if count <= 0 {
+        ctx.db.fridge_item().id().delete(&id);
+    } else {
+        ctx.db.fridge_item().id().update(FridgeItem { count, updated_at: ctx.timestamp, ..item });
+    }
+    Ok(())
+}
+
+/// Records a use without changing the count, for clients that sync counts separately
+/// (the iMessage backend: USED by text, then its sync lowers the count).
+#[reducer]
+pub fn log_use(ctx: &ReducerContext, id: String, qty: i32, name: String) -> Result<(), String> {
+    let hid = require_household(ctx)?;
+    check_id(&id)?;
+    if !(1..=1000).contains(&qty) {
+        return Err("Invalid quantity.".into());
+    }
+    record_use(ctx, &hid, &id, &name, qty);
     Ok(())
 }
 

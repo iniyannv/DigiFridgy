@@ -150,15 +150,29 @@ async def mock_text(request: Request, body: MockText):
     return {"conversation": ctx.photon.conversation(body.handle)}
 
 
+def bank_for_app_user(ctx, app_household_id: str, app_identity: str | None) -> Household | None:
+    """The bank household of this app user (Connect your bank), else the newest bank linked to their fridge."""
+    from ..models import AppMember
+    from ..money import norm_identity
+    from ..spacetime.bridge import household_for_app
+    with Session(ctx.engine) as s:
+        if app_identity:
+            m = s.get(AppMember, norm_identity(app_identity))
+            link = s.get(SpacetimeLink, m.household_id) if m else None
+            if link and link.app_household_id == app_household_id:
+                return s.get(Household, m.household_id)
+    return household_for_app(ctx, app_household_id)
+
+
 @router.get("/state")
 async def state(request: Request, household_id: int | None = None, handle: str | None = None,
-                app_household_id: str | None = None):
+                app_household_id: str | None = None, app_identity: str | None = None):
     """`app_household_id` (from the iPhone app) returns only the bank household that shares that
-    app household's fridge, and none if no one has linked a bank to it yet."""
+    app household's fridge, and none if no one has linked a bank to it yet. With `app_identity`,
+    it's that app user's own bank (roommates each connect their own)."""
     ctx = _ctx(request)
     if app_household_id:
-        from ..spacetime.bridge import household_for_app
-        linked = household_for_app(ctx, app_household_id)
+        linked = bank_for_app_user(ctx, app_household_id, app_identity)
         household_id = linked.id if linked else None
     with Session(ctx.engine) as s:
         hh = (s.get(Household, household_id) if household_id else None) if app_household_id \
@@ -194,6 +208,7 @@ async def state(request: Request, household_id: int | None = None, handle: str |
                 "waste_total": round(sum(w.amount for w in s.exec(select(WasteEntry).where(
                     WasteEntry.household_id == hh.id))), 2),
                 "week_spend": ins.week_spend, "week_waste": ins.week_waste,
+                "streak": _streak(ctx, s, hh),
                 "pending": [{"kind": a.kind, "payload": a.payload_json} for a in s.exec(
                     select(PendingAction).where(PendingAction.household_id == hh.id, PendingAction.status == "open"))],
             }
@@ -205,6 +220,12 @@ async def state(request: Request, household_id: int | None = None, handle: str |
     if ctx.photon.is_mock:
         out["conversation"] = ctx.photon.conversation(handle)
     return out
+
+
+def _streak(ctx, s: Session, hh: Household) -> dict:
+    from ..money import budget_streak
+    st = budget_streak(ctx, s, hh)
+    return {"weeks": st.weeks, "saved": st.saved, "week_left": st.week_left, "waste_trend": st.waste_trend}
 
 
 def _app_household_id(s: Session, household_id: int) -> str | None:
@@ -227,7 +248,11 @@ async def purchases(request: Request, household_id: int | None = None):
         hh = s.get(Household, household_id) if household_id else pick_household(s, None)
         if not hh:
             raise HTTPException(404, "no such household")
-        return {"purchases": list_purchases(ctx, s, hh.id)}
+        from ..money import purchase_breakdown
+        out = list_purchases(ctx, s, hh.id)
+        for p in out:
+            p["breakdown"] = purchase_breakdown(s, hh.id, p["purchase_id"], p["amount"])
+        return {"purchases": out}
 
 
 @router.post("/purchases/{purchase_id}/stock")
@@ -264,3 +289,95 @@ async def skip_purchase(request: Request, purchase_id: str, household_id: int | 
         n = card.skip_rest(s, hh, purchase_id, ctx.clock.now())
         s.commit()
     return {"skipped": n}
+
+
+# ---------- roommates: settle-up ----------
+
+def _debt_json(state, d) -> dict:
+    return {"from_id": d.from_id, "to_id": d.to_id, "from_name": state.name(d.from_id), "to_name": state.name(d.to_id),
+            "amount": d.amount, "items": d.items[:5]}
+
+
+@router.get("/settle")
+async def settle(request: Request, app_household_id: str, household_id: int | None = None):
+    """Who owes whom among the roommates (bank households) sharing this app household's fridge."""
+    from ..money import settle_state
+    ctx = _ctx(request)
+    state = await settle_state(ctx, app_household_id)
+    return {"me": household_id, "app_uses_available": state.app_uses_available,
+            "roommates": [{"id": r.household_id, "name": r.name} for r in state.roommates.values()],
+            "debts": [_debt_json(state, d) for d in state.debts]}
+
+
+@router.post("/settle/pay")
+async def settle_pay(request: Request, app_household_id: str, household_id: int, to: int):
+    """The app user confirmed paying a roommate: a Nessie transfer between their checking accounts."""
+    from ..money import pay
+    ctx = _ctx(request)
+    with Session(ctx.engine) as s:
+        if household_id not in _roommate_ids(s, app_household_id) or to not in _roommate_ids(s, app_household_id):
+            raise HTTPException(404, "not a roommate in this fridge")
+    ok, message = await pay(ctx, app_household_id, household_id, to)
+    return {"ok": ok, "message": message}
+
+
+@router.post("/settle/ask")
+async def settle_ask(request: Request, app_household_id: str, household_id: int, debtor: int):
+    """Texts a roommate who owes this household their split, with a YES to pay."""
+    from ..money import request_payment
+    ctx = _ctx(request)
+    with Session(ctx.engine) as s:
+        if debtor not in _roommate_ids(s, app_household_id):
+            raise HTTPException(404, "not a roommate in this fridge")
+    return {"message": await request_payment(ctx, app_household_id, debtor, household_id)}
+
+
+def _roommate_ids(s: Session, app_household_id: str) -> set[int]:
+    return {l.household_id for l in s.exec(select(SpacetimeLink).where(
+        SpacetimeLink.app_household_id == app_household_id))}
+
+
+@router.post("/roommate")
+async def add_roommate(request: Request, app_household_id: str, name: str = "Sam", basket: str = "weekly"):
+    """Demo: a second roommate with their own synthetic Nessie customer joins this fridge and buys
+    groceries on their card, so settle-up has two people. No iMessage line is assigned."""
+    from .. import card
+    from ..households import provision_household
+    from ..spacetime.bridge import join_app_household
+    ctx = _ctx(request)
+    if basket not in DATA["baskets"]:
+        raise HTTPException(400, f"unknown basket; choose from {sorted(DATA['baskets'])}")
+    with Session(ctx.engine) as s:
+        code = next((l.invite_code for l in s.exec(select(SpacetimeLink).where(
+            SpacetimeLink.app_household_id == app_household_id)) if l.invite_code), None)
+    if not code:
+        raise HTTPException(404, "connect a bank to this fridge first")
+    name = (name.strip() or "Sam")[:20]
+    hh = await provision_household(ctx, f"{name}'s Household (roommate)", name, "Roommate", is_demo=False,
+                                   key=f"roommate:{app_household_id}:{name.lower()}", lookup_by_name=False)
+    ok, msg = await join_app_household(ctx, hh, code)
+    if not ok:
+        raise HTTPException(502, msg)
+    pid = await create_basket_purchase(ctx, hh.checking_account_id, basket)
+    await sync_now(ctx)
+    with Session(ctx.engine) as s:
+        stocked = card.stock_lines(ctx, s, s.get(Household, hh.id), pid)
+        s.commit()
+    await _sync_app(ctx)
+    return {"household_id": hh.id, "name": name, "stocked": len(stocked)}
+
+
+class UseBody(BaseModel):
+    item: str
+
+
+@router.post("/roommate/use")
+async def roommate_uses(request: Request, household_id: int, body: UseBody):
+    """Demo: a roommate texts USED <item> (no phone needed)."""
+    from ..brain.commands import update_item
+    from ..spacetime.bridge import request_sync
+    ctx = _ctx(request)
+    reply = update_item(ctx, household_id, body.item, "used")
+    await _sync_app(ctx)
+    request_sync(ctx)
+    return {"reply": reply}

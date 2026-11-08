@@ -41,13 +41,16 @@ data on the device; OCR and notifications are still real.
 The server module lives in [`server/spacetimedb/src/lib.rs`](server/spacetimedb/src/lib.rs) (Rust).
 
 - **Tables (all private):** `user_profile`, `household`, `household_member`, `fridge_item`,
-  `shopping_item`, `price_history`. Item, profile and shopping payloads are the app's JSON in a `data`
+  `shopping_item`, `price_history`, `item_use` (who used what, for splitting grocery costs between roommates). Item, profile and shopping payloads are the app's JSON in a `data`
   column, so app models can change without a schema migration.
-- **Reads:** per-caller views `my_profile`, `my_household`, `my_items`, `my_shopping`, `my_prices`. A user
+- **Reads:** per-caller views `my_profile`, `my_household`, `my_items`, `my_shopping`, `my_prices`,
+  `my_item_uses`. A user
   only ever sees their own household; outsiders get empty results.
 - **Writes:** reducers check membership against `ctx.sender()`: `save_profile`, `create_household`,
   `join_household` (6-char invite code), `leave_household`, `upsert_item`, `upsert_items` (receipt batch),
-  `increment_count`, `delete_item`, `save_shopping_item`, `delete_shopping_item`, `save_price`.
+  `increment_count`, `use_item` (−1 in the app: lowers the count and records who used it), `log_use` (the
+  backend records USED by text), `delete_item`, `save_shopping_item`, `delete_shopping_item`, `save_price`.
+  The app and backend fall back to the older reducers until a module with `use_item` is published.
 - **Client:** there's no official Swift SDK, so the app has a small client of its own, with no
   dependencies. Reducers go through `POST /v1/database/:db/call/:reducer`
   ([`SpacetimeClient.swift`](DigiFridgy/Services/Networking/SpacetimeClient.swift)). Live data comes from a

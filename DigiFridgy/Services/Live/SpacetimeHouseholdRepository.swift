@@ -26,6 +26,10 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     private var fallbackTask: Task<Void, Never>?
     private var latestItems: [FridgeItem]?
     private var latestShopping: [ShoppingListItem]?
+    /// From `my_profile`; roommates' bank households are matched to app users by it.
+    private(set) var identityHex: String?
+    /// The published module predates `use_item`: fall back to plain count changes.
+    private var useItemMissing = false
 
     init(client: SpacetimeClient, pollInterval: Duration = .seconds(2)) {
         self.client = client
@@ -40,6 +44,8 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
 
     func profile(uid: String) async throws -> UserProfile? {
         guard let row = try await client.query("SELECT * FROM my_profile").first else { return nil }
+        let hex = row.string("identity_hex")
+        if !hex.isEmpty { identityHex = hex }
         var profile = (try? decoder.decode(UserProfile.self, from: Data(row.string("data").utf8)))
             ?? UserProfile(uid: uid)
         profile.uid = uid
@@ -57,6 +63,10 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
 
     private func currentHousehold() async throws -> Household? {
         guard let row = try await client.query("SELECT * FROM my_household").first else { return nil }
+        if identityHex == nil {
+            // A new user has no profile row until they create or join a household.
+            identityHex = try? await client.query("SELECT * FROM my_profile").first?.string("identity_hex")
+        }
         return Household(id: row.string("id"), name: row.string("name"), inviteCode: row.string("invite_code"),
                          memberUids: row.strings("members"), createdAt: row.date("created_at_ms"))
     }
@@ -222,6 +232,24 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     func deleteItem(id: String, householdId: String) async throws {
         try await client.call("delete_item", [id])
         await refreshItems()
+    }
+
+    func useItem(id: String, qty: Int, name: String, remaining: Int, householdId: String) async throws {
+        if !useItemMissing {
+            do {
+                // Lowers the count (removing the item at zero) and adds a row to the shared "who used what" log.
+                try await client.call("use_item", [id, qty, name])
+                await refreshItems()
+                return
+            } catch SpacetimeError.server(let code, let body) where code == 404 || body.contains("use_item") {
+                useItemMissing = true
+            }
+        }
+        if remaining <= 0 {
+            try await deleteItem(id: id, householdId: householdId)
+        } else {
+            try await incrementCount(itemId: id, by: -qty, householdId: householdId)
+        }
     }
 
     // MARK: Shopping list

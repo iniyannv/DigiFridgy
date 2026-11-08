@@ -27,7 +27,8 @@ def transfers(ctx):
 def test_offer_moves_no_money(seeded):
     ctx = seeded
     hh, msg = setup_offer(ctx)
-    assert msg == "🏦 You're $32.82 under budget this week.\nMove $32.00 to Grocery Fund? Reply YES or NO."
+    assert msg == ("🏦 You're $32.82 under budget this week.\n🔥 1 week under budget, keep it going\n"
+                   "Move $32.00 to Grocery Fund? Reply YES or NO.")
     assert transfers(ctx) == []
     # Unrelated chatter never moves money either.
     for t in ("sure thing buddy", "move it", "transfer", "fridge"):

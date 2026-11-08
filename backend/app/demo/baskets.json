@@ -1,0 +1,45 @@
+{
+  "_note": "All merchants are fictional and all purchases are synthetic.",
+  "merchants": {
+    "avon_fresh": {"name": "Avon Fresh Market", "category": "Grocery",
+                   "address": {"street_number": "1200", "street_name": "Avon Pkwy", "city": "Richardson", "state": "TX", "zip": "75080"},
+                   "geocode": {"lat": 32.9856, "lng": -96.7502}},
+    "valumart": {"name": "ValuMart Grocery", "category": "Grocery",
+                 "address": {"street_number": "455", "street_name": "Coit Rd", "city": "Plano", "state": "TX", "zip": "75075"},
+                 "geocode": {"lat": 33.0131, "lng": -96.7681}},
+    "corner_pantry": {"name": "Corner Pantry Co.", "category": "Grocery",
+                      "address": {"street_number": "88", "street_name": "Main St", "city": "Richardson", "state": "TX", "zip": "75081"},
+                      "geocode": {"lat": 32.9483, "lng": -96.7299}},
+    "avon_fuel": {"name": "Avon Fuel Stop", "category": "Gas",
+                  "address": {"street_number": "1250", "street_name": "Avon Pkwy", "city": "Richardson", "state": "TX", "zip": "75080"},
+                  "geocode": {"lat": 32.9861, "lng": -96.7490}}
+  },
+  "baskets": {
+    "weekly": {"merchant": "avon_fresh", "lines": [
+      ["milk_whole_1gal", 1, 3.49], ["spinach_5oz", 1, 2.99], ["chicken_breast_2lb", 1, 8.98],
+      ["eggs_dozen", 1, 2.79], ["strawberries_1lb", 1, 3.99], ["yogurt_greek_32oz", 1, 5.49],
+      ["bread_wheat", 1, 2.99], ["cheddar_block_16oz", 1, 6.47], ["apples_3lb", 1, 4.99]]},
+    "quick": {"merchant": "corner_pantry", "lines": [
+      ["milk_whole_1gal", 1, 3.59], ["eggs_dozen", 1, 2.99], ["bread_wheat", 1, 3.19]]},
+    "taco": {"merchant": "valumart", "lines": [
+      ["ground_beef_1lb", 1, 5.49], ["tortillas_10ct", 1, 2.49], ["cheese_shredded_8oz", 1, 2.99],
+      ["tomatoes_1lb", 1, 1.99], ["lettuce_romaine", 1, 2.29], ["avocados_4ct", 1, 4.99], ["sour_cream_16oz", 1, 1.89]]},
+    "oat": {"merchant": "valumart", "lines": [["milk_oat_64oz", 1, 4.29], ["bananas_bunch", 1, 1.69]]},
+    "fuel": {"merchant": "avon_fuel", "amount": 38.50, "description": "Unleaded fuel"}
+  },
+  "history": [
+    {"days_ago": 13, "merchant": "valumart", "lines": [
+      ["milk_2pct_1gal", 1, 3.29], ["eggs_dozen", 1, 2.89], ["pasta_16oz", 2, 2.58], ["pasta_sauce_24oz", 1, 2.99],
+      ["ground_beef_1lb", 1, 5.29], ["bananas_bunch", 1, 1.59], ["coffee_12oz", 1, 8.99], ["rice_2lb", 1, 2.49],
+      ["onions_3lb", 1, 2.99], ["butter_1lb", 1, 4.49], ["frozen_pizza", 2, 9.98], ["orange_juice_52oz", 1, 3.99]]},
+    {"days_ago": 10, "merchant": "corner_pantry", "lines": [
+      ["bread_sourdough", 1, 4.99], ["deli_turkey_9oz", 1, 4.49], ["hummus_10oz", 1, 3.29]]},
+    {"days_ago": 6, "merchant": "avon_fresh", "lines": [
+      ["salmon_fillet_1lb", 1, 9.99], ["broccoli_crown", 1, 1.99], ["lemons_3ct", 1, 2.49],
+      ["blueberries_pint", 1, 3.99], ["yogurt_cups_6pk", 1, 4.29], ["carrots_2lb", 1, 2.19],
+      ["potatoes_5lb", 1, 4.49], ["bacon_12oz", 1, 5.99], ["ice_cream_48oz", 1, 3.33]]},
+    {"days_ago": 4, "merchant": "avon_fuel", "amount": 41.20, "description": "Unleaded fuel"},
+    {"days_ago": 3, "merchant": "corner_pantry", "lines": [
+      ["bell_peppers_3ct", 1, 3.99], ["frozen_peas_12oz", 1, 1.79], ["butter_1lb", 1, 4.29]]}
+  ]
+}

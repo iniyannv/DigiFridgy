@@ -11,3 +11,10 @@ Config/Secrets.xcconfig
 DigiFridgy/Resources/GoogleService-Info.plist
 
 .DS_Store
+
+# Backend (Python)
+backend/.venv/
+backend/.env
+backend/data/
+__pycache__/
+.pytest_cache/

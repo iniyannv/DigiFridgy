@@ -1,0 +1,377 @@
+"""Command handlers: one incoming iMessage -> state change -> one reply."""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+from sqlmodel import Session, select
+
+from ..context import Ctx
+from ..fridge import inventory
+from ..fridge.matching import best_catalog_match, category_for, match_items
+from ..households import household_for_new_member, member_by_handle
+from ..models import Household, Item, Member, ShoppingListItem
+from ..photon.client import Inbound
+from ..photon.outbound import send_reply
+from . import copy, pending
+from .router import Intent, route
+
+log = logging.getLogger("commands")
+RECIPES = json.loads(Path(__file__).with_name("recipes.json").read_text())
+
+
+async def handle_message(ctx: Ctx, m: Inbound) -> None:
+    intent = await route(m.text, ctx.llm) if m.text else Intent(name="not_text")
+    with Session(ctx.engine) as s:
+        member = member_by_handle(s, m.sender_handle)
+
+    if member is None:
+        if intent.name == "stop":
+            return
+        hh = await household_for_new_member(ctx, m.sender_handle)
+        with Session(ctx.engine) as s:
+            member = Member(household_id=hh.id, photon_handle=m.sender_handle, photon_space_id=m.space_id,
+                            agent_user_id=m.agent_id, created_at=ctx.clock.now())
+            s.add(member)
+            s.commit()
+            s.refresh(member)
+        await send_reply(ctx, member, m.id, copy.welcome(hh.name, new=True))
+        return
+
+    with Session(ctx.engine) as s:
+        member = s.get(Member, member.id)
+        if member.status == "stopped":
+            if intent.name != "start":
+                return  # STOP means silence until they opt back in
+            member.status = "active"
+        member.photon_space_id = m.space_id
+        member.agent_user_id = m.agent_id
+        s.add(member)
+        s.commit()
+        s.refresh(member)
+        hh = s.get(Household, member.household_id)
+
+    if intent.name == "stop":
+        await send_reply(ctx, member, m.id, copy.STOPPED)
+        with Session(ctx.engine) as s:
+            row = s.get(Member, member.id)
+            row.status = "stopped"
+            row.photon_space_id = None  # delete the conversation link
+            s.add(row)
+            s.commit()
+        return
+
+    reply = await dispatch(ctx, hh, intent)
+    if reply:
+        await send_reply(ctx, member, m.id, reply)
+
+
+async def dispatch(ctx: Ctx, hh: Household, intent: Intent) -> str:
+    name = intent.name
+    if name == "not_text":
+        return copy.NOT_TEXT
+    if name == "start":
+        return copy.welcome(hh.name, new=False)
+    if name == "help":
+        return copy.HELP
+    if name == "privacy":
+        return copy.PRIVACY
+    if name == "fridge":
+        return fridge_text(ctx, hh.id)
+    if name == "expiring":
+        with Session(ctx.engine) as s:
+            return copy.expiring(inventory.use_soon(s, hh.id, ctx.clock.now()), ctx.clock)
+    if name in ("used", "tossed"):
+        return update_item(ctx, hh.id, intent.item, name)
+    if name == "choice":
+        return answer_choice(ctx, hh.id, intent.choice or 0)
+    if name in ("yes", "no"):
+        return await answer_yes_no(ctx, hh, name == "yes")
+    if name == "list":
+        return list_text(ctx, hh.id)
+    if name == "add":
+        return add_to_list(ctx, hh.id, intent.item or "")
+    if name == "remove":
+        return remove_from_list(ctx, hh.id, intent.item or "")
+    if name == "add_all":
+        return add_all(ctx, hh.id)
+    if name == "money":
+        return money_text(ctx, hh.id)
+    if name == "budget":
+        if not intent.amount:
+            return money_text(ctx, hh.id)
+        with Session(ctx.engine) as s:
+            row = s.get(Household, hh.id)
+            row.weekly_budget = round(intent.amount, 2)
+            s.add(row)
+            s.commit()
+        return copy.budget_set(intent.amount)
+    if name == "dinner":
+        return copy.dinner(await dinner_ideas(ctx, hh.id))
+    if name == "check":
+        return check_text(ctx, hh.id, intent.item or "")
+    return copy.UNKNOWN
+
+
+# ---------- fridge ----------
+
+def fridge_text(ctx: Ctx, household_id: int) -> str:
+    with Session(ctx.engine) as s:
+        items = inventory.fresh_items(s, household_id)
+        soon = {i.id for i in inventory.use_soon(s, household_id, ctx.clock.now())}
+        return copy.fridge(items, ctx.clock, soon)
+
+
+def _apply(ctx: Ctx, s: Session, household_id: int, items: list[Item], status: str) -> str:
+    now = ctx.clock.now()
+    name = items[0].name
+    sku = items[0].sku
+    wasted = inventory.mark(s, items, status, now)
+    remaining = len([i for i in inventory.fresh_items(s, household_id) if i.sku == sku])
+    week_waste = 0.0
+    if status == "tossed":
+        start, end = inventory.week_bounds(ctx.clock)
+        week_waste = round(sum(w.amount for w in inventory.waste_between(s, household_id, start, end)), 2)
+    msg = copy.marked(name, status, remaining, wasted, week_waste)
+    suggestions = inventory.suggest_staples(s, household_id, now, only={sku}) if remaining == 0 else []
+    if suggestions:
+        pending.create(s, household_id, "add_suggestions", {"ids": [r.id for r in suggestions]}, now)
+        msg += "\n" + copy.suggestions_prompt([r.name for r in suggestions]).replace(
+            "Reply ADD ALL", "Reply YES or ADD ALL")
+    s.commit()
+    return msg
+
+
+def update_item(ctx: Ctx, household_id: int, query: str | None, status: str) -> str:
+    now = ctx.clock.now()
+    with Session(ctx.engine) as s:
+        fresh = inventory.fresh_items(s, household_id)
+        if not query:
+            # Bare USED/TOSSED answers the latest expiry nudge.
+            a = pending.latest(s, household_id, ("nudge",))
+            if a and not pending.is_expired(a, now):
+                item = s.get(Item, pending.payload(a)["item_id"])
+                pending.set_status(s, a, "done")
+                if item and item.status == "fresh":
+                    return _apply(ctx, s, household_id, [item], status)
+            return f"Which item? For example: {status.upper()} milk"
+
+        cat = category_for(query)
+        if cat:
+            in_cat = [i for i in fresh if i.category == cat]
+            if not in_cat:
+                return copy.not_in_fridge(query)
+            if len(in_cat) == 1:
+                return _apply(ctx, s, household_id, in_cat, status)
+            names = sorted({i.name for i in in_cat})
+            pending.create(s, household_id, "bulk_used",
+                           {"ids": [i.id for i in in_cat], "status": status, "category": query}, now)
+            s.commit()
+            return copy.bulk_confirm(query, names).replace("as used", "as tossed" if status == "tossed" else "as used")
+
+        cands = match_items(query, fresh)
+        if not cands:
+            return copy.not_in_fridge(query)
+        if len(cands) == 1:
+            # Oldest unit first (fresh_items is ordered by expiry).
+            item = next(i for i in fresh if i.id in cands[0].ids)
+            return _apply(ctx, s, household_id, [item], status)
+        options = []
+        for c in cands[:4]:
+            first = next(i for i in fresh if i.id in c.ids)
+            options.append({"name": first.name, "item_id": first.id,
+                            "bought": ctx.clock.to_local(first.purchased_at).strftime("%a")})
+        pending.create(s, household_id, "disambiguate", {"status": status, "options": options}, now)
+        s.commit()
+        return copy.disambiguate(query, [(o["name"], o["bought"]) for o in options])
+
+
+def answer_choice(ctx: Ctx, household_id: int, n: int) -> str:
+    now = ctx.clock.now()
+    with Session(ctx.engine) as s:
+        a = pending.latest(s, household_id, ("disambiguate",))
+        if not a or pending.is_expired(a, now):
+            return copy.nothing_pending()
+        p = pending.payload(a)
+        if not 1 <= n <= len(p["options"]):
+            return f"Reply a number from 1 to {len(p['options'])}."
+        pending.set_status(s, a, "done")
+        item = s.get(Item, p["options"][n - 1]["item_id"])
+        if not item or item.status != "fresh":
+            s.commit()
+            return "That item was already updated. Reply FRIDGE to check."
+        return _apply(ctx, s, household_id, [item], p["status"])
+
+
+async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool) -> str:
+    from ..nessie.banking import execute_transfer
+
+    now = ctx.clock.now()
+    with Session(ctx.engine) as s:
+        a = pending.latest(s, hh.id, pending.YES_NO_KINDS)
+        if not a:
+            return copy.nothing_pending()
+        if pending.is_expired(a, now):
+            pending.set_status(s, a, "expired")
+            s.commit()
+            return copy.offer_expired() if a.kind == "transfer" else "⌛ That question expired. Reply HELP for options."
+        p = pending.payload(a)
+        kind, action_id = a.kind, a.id
+
+        if kind == "transfer":
+            if not yes:
+                pending.set_status(s, a, "declined")
+                s.commit()
+                return copy.transfer_declined()
+            s.commit()
+        elif kind == "bulk_used":
+            pending.set_status(s, a, "done" if yes else "declined")
+            if not yes:
+                s.commit()
+                return "👍 OK, I left them as they were."
+            items = [i for i in (s.get(Item, iid) for iid in p["ids"]) if i and i.status == "fresh"]
+            if not items:
+                s.commit()
+                return "Those were already updated."
+            inventory.mark(s, items, p.get("status", "used"), now)
+            s.commit()
+            return copy.bulk_marked(len(items), p.get("category", ""), p.get("status", "used"))
+        elif kind == "nudge":
+            pending.set_status(s, a, "done")
+            item = s.get(Item, p["item_id"])
+            if not item or item.status != "fresh":
+                s.commit()
+                return "That item was already updated."
+            if yes:
+                s.commit()
+                return copy.still_have_it(item.name)
+            return _apply(ctx, s, hh.id, [item], "used")
+        elif kind == "add_suggestions":
+            pending.set_status(s, a, "done" if yes else "declined")
+            rows = [r for r in (s.get(ShoppingListItem, i) for i in p["ids"]) if r and not r.done]
+            for r in rows:
+                if yes:
+                    r.confirmed = True
+                else:
+                    r.done = True
+                s.add(r)
+            s.commit()
+            return copy.added([r.name for r in rows]) if yes and rows else "👍 OK, not adding it."
+
+    # Transfer YES: money moves only here, after an explicit typed YES.
+    return await execute_transfer(ctx, hh, action_id, float(p["amount"]))
+
+
+# ---------- shopping list ----------
+
+def _open_rows(s: Session, household_id: int) -> list[ShoppingListItem]:
+    return list(s.exec(select(ShoppingListItem).where(ShoppingListItem.household_id == household_id,
+                                                      ShoppingListItem.done == False)  # noqa: E712
+                       .order_by(ShoppingListItem.added_at)))
+
+
+def list_text(ctx: Ctx, household_id: int) -> str:
+    with Session(ctx.engine) as s:
+        rows = _open_rows(s, household_id)
+        return copy.shopping_list([r for r in rows if r.confirmed], [r for r in rows if not r.confirmed])
+
+
+def add_to_list(ctx: Ctx, household_id: int, raw: str, source: str = "manual") -> str:
+    raw = raw.strip()[:60]
+    if not raw:
+        return "What should I add? For example: ADD coffee"
+    info = best_catalog_match(raw)
+    name = info.display_name if info else raw
+    with Session(ctx.engine) as s:
+        for r in _open_rows(s, household_id):
+            if (info and r.sku == info.sku) or r.name.lower() == name.lower():
+                if r.confirmed:
+                    return f"🛒 {r.name} is already on your list."
+                r.confirmed = True
+                s.add(r)
+                s.commit()
+                return copy.added([r.name])
+        s.add(ShoppingListItem(household_id=household_id, name=name, sku=info.sku if info else None,
+                               source=source, confirmed=True, added_at=ctx.clock.now()))
+        s.commit()
+    return copy.added([name])
+
+
+def remove_from_list(ctx: Ctx, household_id: int, raw: str) -> str:
+    with Session(ctx.engine) as s:
+        rows = _open_rows(s, household_id)
+        cands = match_items(raw, rows)
+        if not cands:
+            return copy.not_on_list(raw)
+        for r in rows:
+            if r.id in cands[0].ids:
+                r.done = True
+                s.add(r)
+        s.commit()
+        return copy.removed(cands[0].name)
+
+
+def add_all(ctx: Ctx, household_id: int) -> str:
+    with Session(ctx.engine) as s:
+        rows = [r for r in _open_rows(s, household_id) if not r.confirmed]
+        if not rows:
+            return "💡 No suggestions right now. Reply LIST to see your list."
+        for r in rows:
+            r.confirmed = True
+            s.add(r)
+        a = pending.latest(s, household_id, ("add_suggestions",))
+        if a:
+            pending.set_status(s, a, "done")
+        s.commit()
+        return copy.added([r.name for r in rows])
+
+
+# ---------- money / dinner / check ----------
+
+def money_text(ctx: Ctx, household_id: int) -> str:
+    from ..nessie.banking import insight
+    with Session(ctx.engine) as s:
+        return copy.money(insight(ctx, s, s.get(Household, household_id)))
+
+
+def template_ideas(use_soon_skus: list[str], fresh_skus: set[str]) -> list[str]:
+    scored = []
+    for r in RECIPES:
+        uses = set(r["uses"])
+        soon_hits = [sku for sku in use_soon_skus if sku in uses]
+        have_hits = uses & fresh_skus
+        score = 10 * len(soon_hits) + len(have_hits)
+        if soon_hits or len(have_hits) >= 2:
+            scored.append((score, r["name"]))
+    scored.sort(key=lambda x: -x[0])
+    return [name for _, name in scored[:2]]
+
+
+async def dinner_ideas(ctx: Ctx, household_id: int) -> list[str]:
+    with Session(ctx.engine) as s:
+        fresh = inventory.fresh_items(s, household_id)
+        soon = inventory.use_soon(s, household_id, ctx.clock.now())
+    soon_skus = list(dict.fromkeys(i.sku for i in soon))
+    if ctx.llm is not None and fresh:
+        ideas = await ctx.llm.dinner_ideas([i.name for i in soon], sorted({i.name for i in fresh}))
+        if ideas:
+            return ideas
+    ideas = template_ideas(soon_skus, {i.sku for i in fresh})
+    return ideas or ["Your fridge is light. Reply LIST to plan a grocery run."]
+
+
+def check_units(ctx: Ctx, household_id: int, query: str) -> tuple[str, list[Item]]:
+    with Session(ctx.engine) as s:
+        fresh = inventory.fresh_items(s, household_id)
+        cands = match_items(query, fresh)
+        ids = {i for c in cands for i in c.ids}
+        units = [i for i in fresh if i.id in ids]
+    info = best_catalog_match(query)
+    label = units[0].name if units else (info.display_name if info else query)
+    return label, units
+
+
+def check_text(ctx: Ctx, household_id: int, query: str) -> str:
+    label, units = check_units(ctx, household_id, query)
+    return copy.check(label, units, ctx.clock)

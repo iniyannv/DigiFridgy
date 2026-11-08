@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 from ..brain import copy, pending
 from ..context import Ctx
 from ..fridge import inventory
-from ..models import Household, ProcessedPurchase
+from ..models import Household, PendingAction, ProcessedPurchase
 from .client import running_balance, whole_dollars
 from ..photon.outbound import notify_household
 
@@ -59,6 +59,19 @@ def insight(ctx: Ctx, s: Session, hh: Household) -> Insight:
     )
 
 
+def swept_this_week(ctx: Ctx, s: Session, household_id: int) -> float:
+    """Dollars budget sweeps already moved to Grocery Fund this week (confirmed with YES)."""
+    import json
+    week = str(ctx.clock.week_start())
+    total = 0.0
+    for a in s.exec(select(PendingAction).where(PendingAction.household_id == household_id,
+                                                PendingAction.kind == "transfer", PendingAction.status == "done")):
+        p = json.loads(a.payload_json or "{}")
+        if p.get("week") == week:
+            total += float(p.get("amount", 0))
+    return round(total, 2)
+
+
 async def offer_sweep(ctx: Ctx, hh: Household, key: str) -> str | None:
     """If under budget this week, asks to move the difference. Never moves money itself."""
     if not hh.grocery_fund_account_id:
@@ -66,8 +79,13 @@ async def offer_sweep(ctx: Ctx, hh: Household, key: str) -> str | None:
     with Session(ctx.engine) as s:
         ins = insight(ctx, s, hh)
         under = round(ins.budget - ins.week_spend, 2)
-        move = float(whole_dollars(under))  # Nessie stores whole dollars
-        if move < 1:
+        # What this week's sweeps already moved isn't left to move again (a second offer the same week
+        # would otherwise move the same dollars twice).
+        swept = swept_this_week(ctx, s, hh.id)
+        move = float(whole_dollars(under - swept))  # Nessie stores whole dollars
+        if move < 1 and swept and under >= 1:
+            text = copy.already_swept(swept)
+        elif move < 1:
             text = copy.over_budget(ins)
         else:
             from ..money import budget_streak

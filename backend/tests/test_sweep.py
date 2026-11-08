@@ -101,3 +101,31 @@ def test_new_question_supersedes_offer(seeded):
     assert text(ctx, "yes").startswith("🛒 Added whole milk")
     assert transfers(ctx) == []
     assert timedelta  # keep import used
+
+
+def test_second_sweep_same_week_only_offers_whats_new(seeded):
+    # $32 moved this week: offering the same $32 again would move it twice.
+    ctx = seeded
+    hh, _ = setup_offer(ctx)
+    assert text(ctx, "YES").startswith("✅ Moved $32.00")
+    again = run(offer_sweep(ctx, household(ctx), "sweep:again"))
+    assert again == "🏦 You already moved $32.00 to Grocery Fund this week.\nNothing new to move until next week."
+    assert text(ctx, "YES").startswith("Nothing is waiting")
+    assert len(transfers(ctx)) == 1
+    # Raising the budget leaves new room: only the difference is offered.
+    with Session(ctx.engine) as s:
+        row = s.get(type(hh), hh.id)
+        row.weekly_budget = 95.0
+        s.add(row)
+        s.commit()
+    third = run(offer_sweep(ctx, household(ctx), "sweep:third"))
+    assert third.endswith("Move $20.00 to Grocery Fund? Reply YES or NO.")
+
+
+def test_a_new_week_sweeps_again(seeded):
+    ctx = seeded
+    setup_offer(ctx)
+    text(ctx, "YES")
+    ctx.clock.advance(days=7)
+    msg = run(offer_sweep(ctx, household(ctx), "sweep:next-week"))
+    assert "Move $" in msg and "already moved" not in msg

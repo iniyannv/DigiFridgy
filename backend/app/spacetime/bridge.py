@@ -29,7 +29,7 @@ from sqlmodel import Session, select
 
 from ..config import BACKEND_DIR
 from ..context import Ctx
-from ..fridge.shelf_life import find_by_words, lookup
+from ..fridge.shelf_life import find_by_words, is_known, lookup
 from ..fridge.matching import best_catalog_match
 from ..models import (ApprovalLink, Household, Item, ListClaim, PendingAction, ProcessedPurchase,
                       ShoppingListItem, SpaceItemLink, SpaceListLink, SpaceSyncState, SpacetimeLink, UsageLog)
@@ -84,6 +84,12 @@ def app_category(name: str) -> str:
                     if best is None or score > best[0]:
                         best = (score, cid)
     return best[1] if best else "other"
+
+
+# For app items the backend catalog doesn't have: the app category's emoji and where it's kept.
+APP_EMOJI = {"pantry": "🥫", "snacks": "🍫", "beverages": "🥤", "condiments": "🫙", "prepared_meals": "🍝",
+             "juice": "🧃", "pickles": "🫙", "salsa": "🫙", "hummus": "🫙"}
+APP_LOCATION = {"pantry": "pantry", "snacks": "pantry", "beverages": "pantry", "condiments": "pantry"}
 
 
 _IMPLIED_ALLERGENS = {
@@ -820,11 +826,18 @@ def _new_unit(ctx: Ctx, household_id: int, template: Item | None, data: dict | N
         name = data.get("name")
         name = name.strip()[:80] if isinstance(name, str) and name.strip() else "item"
         info = find_by_words(name) or lookup(name.lower().replace(" ", "_"))
+        emoji, location = info.emoji, info.location
+        app_cat = data.get("category") if isinstance(data.get("category"), str) else None
+        if app_cat and app_cat != "other" and is_known(info.sku) and app_category(info.display_name) != app_cat:
+            # The app (and its AI) chose the category; a word match on the name ("Cup Noodles Chicken
+            # Flavor" -> chicken breast) would put it in the wrong place with the wrong emoji.
+            info = lookup(name.lower().replace(" ", "_"))
+            emoji, location = APP_EMOJI.get(app_cat, info.emoji), APP_LOCATION.get(app_cat, info.location)
         expires_ms, added_ms = _ms(data.get("expiresAt")), _ms(data.get("addedAt"))
         expires = _from_ms(ctx, expires_ms) if expires_ms else now + timedelta(days=info.shelf_life_days)
         added = _from_ms(ctx, added_ms) if added_ms else now
         return Item(household_id=household_id, sku=info.sku, name=name.lower(), category=info.category,
-                    location=info.location, emoji=info.emoji, price=0.0, purchased_at=added, expires_at=expires,
+                    location=location, emoji=emoji, price=0.0, purchased_at=added, expires_at=expires,
                     status="fresh" if expires > now else "expired")
     t = template
     return Item(household_id=household_id, sku=t.sku, name=t.name, category=t.category, location=t.location,

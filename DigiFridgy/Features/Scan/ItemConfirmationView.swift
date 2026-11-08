@@ -6,6 +6,8 @@ struct ItemConfirmationView: View {
     @Environment(AppState.self) private var app
     @State var draft: FridgeItem
     var usesSavedCorrections: Bool
+    /// The name and category were suggested by AI (shown so people know to check them).
+    var aiSuggested: Bool
     /// True while the parent is saving: the button shows progress and can't be tapped twice.
     var isSaving: Bool
     var onSave: (FridgeItem) -> Void
@@ -14,10 +16,11 @@ struct ItemConfirmationView: View {
     @State private var showDatePicker = false
     @State private var editingNutrition = false
 
-    init(draft: FridgeItem, usesSavedCorrections: Bool = false, isSaving: Bool = false,
+    init(draft: FridgeItem, usesSavedCorrections: Bool = false, aiSuggested: Bool = false, isSaving: Bool = false,
          onSave: @escaping (FridgeItem) -> Void, onRescan: @escaping () -> Void) {
         _draft = State(initialValue: draft)
         self.usesSavedCorrections = usesSavedCorrections
+        self.aiSuggested = aiSuggested
         self.isSaving = isSaving
         self.onSave = onSave
         self.onRescan = onRescan
@@ -43,6 +46,10 @@ struct ItemConfirmationView: View {
                     Label("Using your saved corrections for this barcode", systemImage: "checkmark.seal.fill")
                         .font(.footnote)
                         .foregroundStyle(Tone.success.color)
+                } else if aiSuggested {
+                    Label("Name and category suggested by AI. Change them if they're off.", systemImage: "sparkles")
+                        .font(.footnote)
+                        .foregroundStyle(Tone.info.color)
                 }
             }
 

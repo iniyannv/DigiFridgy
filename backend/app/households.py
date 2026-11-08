@@ -106,3 +106,32 @@ async def household_for_new_member(ctx: Ctx, handle: str) -> Household:
     digits = "".join(ch for ch in handle if ch.isalnum())[-4:] or "0000"
     return await provision_household(ctx, f"Household {digits}", "Fridge", f"Owner{digits}",
                                      is_demo=False, key=f"household:handle:{handle.lower()}", lookup_by_name=False)
+
+
+# ---------- roommates: separate bank households that share one app fridge ----------
+
+def _app_household(s: Session, household_id: int) -> str:
+    from .models import SpacetimeLink
+    link = s.get(SpacetimeLink, household_id)
+    return (link.app_household_id or "") if link else ""
+
+
+def same_app_household(s: Session, a: int, b: int) -> bool:
+    """True when both bank households are the same, or both are linked to one (non-empty) app household.
+    Roommates who each connected their own card are separate bank households but share the app fridge."""
+    if a == b:
+        return True
+    app_a = _app_household(s, a)
+    return bool(app_a) and app_a == _app_household(s, b)
+
+
+def linked_household_ids(s: Session, household_id: int) -> list[int]:
+    """This bank household first, then every other one linked to the same app household."""
+    from .models import SpacetimeLink
+    app_hh = _app_household(s, household_id)
+    if not app_hh:
+        return [household_id]
+    others = s.exec(select(SpacetimeLink.household_id).where(SpacetimeLink.app_household_id == app_hh,
+                                                             SpacetimeLink.household_id != household_id)
+                    .order_by(SpacetimeLink.household_id))
+    return [household_id, *others]

@@ -10,6 +10,9 @@ EDAMAM_APP_KEY =
 KROGER_CLIENT_ID =
 KROGER_CLIENT_SECRET =
 CALORIENINJAS_KEY =
+WALMART_CONSUMER_ID =
+WALMART_KEY_VERSION = 1
+WALMART_PRIVATE_KEY =
 
 // DigiFridgey bank/iMessage server (backend/). Empty = localhost:8010 in the Simulator; a device build must set it
 // in Secrets.xcconfig (or the user types it in Settings). "//" starts a comment in xcconfig, so write the URL as

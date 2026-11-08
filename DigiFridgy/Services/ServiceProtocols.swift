@@ -88,6 +88,7 @@ protocol RecallService: AnyObject, Sendable {
     func recentRecalls(days: Int) async throws -> [Recall]
 }
 
+/// A live price from a store API (Kroger per store, Walmart per product).
 nonisolated struct KrogerPrice: Sendable {
     var regular: Double
     var promo: Double?
@@ -98,6 +99,13 @@ protocol KrogerService: AnyObject, Sendable {
     var isLive: Bool { get }
     func locations(near: Coordinate, radiusMiles: Double, limit: Int) async throws -> [Store]
     func price(upc: String?, term: String, locationId: String) async throws -> KrogerPrice?
+}
+
+/// walmart.com prices: one per product (not per store), shown on every nearby Walmart as an online price.
+protocol WalmartService: AnyObject, Sendable {
+    var isLive: Bool { get }
+    /// Current walmart.com price, or nil when Walmart has no matching item.
+    func price(upc: String?, term: String) async throws -> KrogerPrice?
 }
 
 protocol StoreSearchService: AnyObject, Sendable {

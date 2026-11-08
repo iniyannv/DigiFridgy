@@ -80,6 +80,11 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
               r"|what happened to (my|the|our) groceries)$"),
     ("money", r"^(money|spend|spending|insights?|budget|waste|wasted|how much (did i|have i) (spend|spent|waste|wasted).*)$"),
     ("budget", r"^(set )?(my )?(weekly )?budget (to )?\$?(?P<amount>\d+(?:\.\d{1,2})?)$"),
+    # "easy recipes with chicken", "quick dinner ideas", "recipes under 30 minutes", "what can I make in 15 min"
+    ("dinner", r"^(?P<item>(?:(?:an? |some |any )?(?:easy|easiest|simple|simplest|quick|quickest|fast|fastest|lazy"
+               r"|no[- ]fuss|low[- ]effort)\b.*?\b(?:recipes?|meals?|dinners?|lunch|breakfast|ideas|dishes|to (?:make|cook))\b.*"
+               r"|(?:recipes?|meals?|dinner|ideas|something|what (?:can|could|should) (?:i|we) (?:make|cook))"
+               r"(?: .*?)? (?:under|in|within|less than) \d{1,3} ?(?:min|mins|minutes)\b.*))$"),
     ("dinner", r"^(dinner|recipes?|ideas|meal ideas|dinner ideas|recipe ideas|cooking ideas|food ideas"
                r"|what should (i|we) (make|cook|eat)( tonight| for dinner| for lunch)?"
                r"|what (can|could) (i|we) (make|cook)( tonight| for dinner| for lunch)?|what'?s for dinner"
@@ -94,6 +99,9 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
                rf"(?: tonight| before it goes bad| before it spoils)?$"),
     ("dinner", rf"^(?:how (?:do|can|should) (?:i|we) use(?: up)?|use up|help me use(?: up)?|cook with) {_ITEM}$"),
     ("dinner", rf"^{_ITEM} (?:recipes?|recipe ideas|ideas|dishes|meals)$"),
+    # Right after EXPIRING ("Reply USE THEM UP for recipes with these").
+    ("dinner_expiring", r"^(?:use (?:them|these|those|it|it all|everything) up|use up (?:them|these|those)"
+                        r"|recipes? (?:for|with|using) (?:them|these|those)|cook (?:them|these|those))$"),
     ("used", r"^(used|finished|done|ate it|used it)$"),
     ("tossed", r"^(tossed|toss|threw it out|trashed|binned|tossed it)$"),
     ("used", rf"^(?:i |we )?(?:used( up)?|finished( off)?|ate|drank|done with|polished off|we finished|we used|"
@@ -117,6 +125,8 @@ def keyword_intent(text: str) -> Intent | None:
             continue
         g = m.groupdict()
         item = (g.get("item") or "").strip() or None
+        if name == "dinner_expiring":
+            name, item = "dinner", "what's expiring"
         if item:
             item = re.sub(r"\b(please|pls|thanks|thank you)\b", "", item).strip(" ,") or None
         amount = float(g["amount"]) if g.get("amount") else None

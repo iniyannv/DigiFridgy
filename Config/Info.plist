@@ -39,5 +39,11 @@
 	<string>$(KROGER_CLIENT_SECRET)</string>
 	<key>CalorieNinjasKey</key>
 	<string>$(CALORIENINJAS_KEY)</string>
+	<key>WalmartConsumerID</key>
+	<string>$(WALMART_CONSUMER_ID)</string>
+	<key>WalmartKeyVersion</key>
+	<string>$(WALMART_KEY_VERSION)</string>
+	<key>WalmartPrivateKey</key>
+	<string>$(WALMART_PRIVATE_KEY)</string>
 </dict>
 </plist>

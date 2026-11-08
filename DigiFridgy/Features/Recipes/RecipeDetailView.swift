@@ -95,8 +95,13 @@ struct RecipeDetailView: View {
                 Text(RecipeCard.displayTitle(recipe.title))
                     .font(.title2.bold())
                     .fixedSize(horizontal: false, vertical: true)
-                if let source = recipe.sourceName {
-                    Text("From \(source)").font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    StatusChip(text: recipe.difficulty.label, tone: recipe.difficulty.tone)
+                        .fixedSize()
+                        .accessibilityLabel("Difficulty: \(recipe.difficulty.label)")
+                    if let source = recipe.sourceName {
+                        Text("From \(source)").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
                 stats
                 if !tags.isEmpty {

@@ -126,6 +126,14 @@ nonisolated struct CardPurchase: Decodable, Sendable, Identifiable {
 nonisolated struct CardPurchaseList: Decodable, Sendable { var purchases: [CardPurchase] }
 nonisolated struct CardStockResult: Decodable, Sendable { var added: Int; var names: [String] }
 
+/// The server's AI help for a scanned product: a short everyday name and the category it really is.
+nonisolated struct ProductGuess: Decodable, Sendable {
+    var ok: Bool
+    var name: String?
+    var category: String?
+    var storage: String?
+}
+
 nonisolated struct BankActionResult: Decodable, Sendable {
     var processed: Int?
     var expired: Int?
@@ -478,6 +486,23 @@ final class BankStore {
                                                         body: ["item": item], as: RoommateUseResult.self) }
         await refresh()
         return "\(roommate.name): \(r.reply)"
+    }
+
+    /// AI help naming and sorting a scanned product ("Cup Noodles Chicken Flavor" is pantry food, not chicken).
+    /// Nil when the server has no AI key, isn't set up, or is slow: the scan keeps its keyword match.
+    func describeProduct(name: String, brand: String?, categories: [String]) async -> ProductGuess? {
+        guard !name.isEmpty, let endpoint = try? url("/demo/product/describe") else { return nil }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 6
+        (await headers()).forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["name": name, "categories": categories]
+        if let brand { body["brand"] = brand }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let guess = try? await APIClient.shared.send(request, as: ProductGuess.self), guess.ok,
+              guess.category != nil else { return nil }
+        return guess
     }
 
     private func guarded<T>(_ work: @escaping () async throws -> T) async throws -> T {

@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from ..context import Ctx
 from ..fridge import inventory
 from ..fridge.matching import best_catalog_match, category_for, match_items
-from ..households import household_for_new_member, member_by_handle
+from ..households import household_for_new_member, member_by_handle, same_app_household
 from ..models import Household, Item, Member, PendingAction, ProcessedPurchase, ShoppingListItem
 from ..photon.client import Inbound
 from ..photon.outbound import send_reply
@@ -51,7 +51,7 @@ async def _answer_content(ctx: Ctx, hh: Household, m: Inbound, intent: Intent, m
     if m.content_type == "attachment" and m.attachment_id:
         from . import photo
         return await photo.handle(ctx, hh, m)
-    return await dispatch(ctx, hh, intent, member=member, in_group=in_group)
+    return await dispatch(ctx, hh, intent, member=member, in_group=in_group, text=m.text)
 
 
 async def handle_message(ctx: Ctx, m: Inbound) -> None:
@@ -152,6 +152,7 @@ async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
     handle = normalize_handle(m.sender_handle) or m.sender_handle
     joined = linked_now = False
     stranger_hh: Household | None = None
+    own_hh: Household | None = None  # a roommate's own bank household, when it isn't the group's
     with Session(ctx.engine) as s:
         member = member_by_handle(s, handle) or (member_by_handle(s, m.sender_handle)
                                                  if handle != m.sender_handle else None)
@@ -173,9 +174,13 @@ async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
             hh = s.get(Household, member.household_id)
             linked_now = True
         else:
-            if group.household_id != member.household_id:
+            # Roommates who connected their own card are their own bank household, but they share the
+            # app fridge with the group's household, so they're in. Anyone else's number is ignored.
+            if not same_app_household(s, group.household_id, member.household_id):
                 return
             hh = s.get(Household, group.household_id)
+            if member.household_id != hh.id:
+                own_hh = s.get(Household, member.household_id)
 
     if member is None:
         said = keyword_intent(m.text or "") if m.content_type == "text" else None
@@ -191,22 +196,30 @@ async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
                        hh.id)
         return
     intent = await route(m.text, ctx.llm) if m.text else Intent(name="not_text")
-    before = _last_action_id(ctx, hh.id)
+    # The fridge and list are shared; a roommate's money (balance, budget, settle-up, app link) is their own.
+    act_hh = own_hh if own_hh is not None and intent.name in OWN_BANK_INTENTS else hh
+    before = _last_action_id(ctx, act_hh.id)
     if intent.name == "stop":
         reply = "To stop my messages, text STOP to me directly. Everyone else in this group keeps getting them."
     elif joined and intent.name in ("start", "help", "unknown", "not_text") and m.content_type != "attachment":
         reply = None
     else:
-        reply = await _answer_content(ctx, hh, m, intent, member, in_group=True)
+        reply = await _answer_content(ctx, act_hh, m, intent, member, in_group=True)
     if joined:
         hello = copy.invited_welcome(member.display_name, hh.name, family.inviter_name(ctx, member))
         reply = hello + ("\n\n" + reply if reply else "")
     if reply:
-        await reply_in(ctx, m.space_id, m.agent_id, m.id, reply, hh.id, action_id=_asked(ctx, hh.id, before))
+        await reply_in(ctx, m.space_id, m.agent_id, m.id, reply, act_hh.id,
+                       action_id=_asked(ctx, act_hh.id, before))
+
+
+# In the group chat, these act on the sender's own bank household when a roommate with their own card
+# says them: everything else (fridge, list, claims, recipes, photos) is the shared fridge.
+OWN_BANK_INTENTS = ("money", "settle", "budget", "trips", "app", "link")
 
 
 async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | None = None,
-                   in_group: bool = False) -> str:
+                   in_group: bool = False, text: str | None = None) -> str:
     member_id = member.id if member else None
     name = intent.name
     if name == "not_text":
@@ -290,7 +303,42 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | Non
     if name == "link":
         from ..spacetime.bridge import link_to_code
         return await link_to_code(ctx, hh, intent.item or "")
+    if name == "unknown" and text and ctx.llm is not None:
+        return await chat_reply(ctx, hh, text, in_group)
     return copy.UNKNOWN
+
+
+def chat_facts(ctx: Ctx, household_id: int) -> dict:
+    """What Gemini may know when it answers a free-form message: the fridge and the shopping list."""
+    now = ctx.clock.now()
+    with Session(ctx.engine) as s:
+        fresh = inventory.fresh_items(s, household_id)
+        soon = {i.id for i in inventory.use_soon(s, household_id, now)}
+        rows = [r for r in _open_rows(s, household_id) if r.confirmed]
+    fridge: dict[str, dict] = {}
+    for it in fresh:  # ordered by expiry, so the first unit of a name is the one that goes first
+        row = fridge.setdefault(it.name, {"name": it.name, "qty": 0, "where": it.location,
+                                          "days_left": (ctx.clock.to_local(it.expires_at).date()
+                                                        - ctx.clock.today()).days,
+                                          "use_soon": it.id in soon})
+        row["qty"] += 1
+    return {"today": ctx.clock.today().isoformat(), "fridge": list(fridge.values())[:40],
+            "shopping_list": [r.name for r in rows][:25]}
+
+
+async def chat_reply(ctx: Ctx, hh: Household, text: str, in_group: bool) -> str:
+    """Gemini answers what no command matched. It only writes text: nothing here changes state.
+    In the group chat it stays quiet when people are talking to each other, not to me."""
+    try:
+        got = await ctx.llm.chat(text, chat_facts(ctx, hh.id), in_group=in_group)
+    except Exception:
+        log.exception("chat reply failed")
+        got = None
+    if not got:
+        return copy.UNKNOWN
+    if in_group and not got.get("for_me", True):
+        return ""
+    return got.get("reply") or copy.UNKNOWN
 
 
 async def _app_code(ctx: Ctx, hh: Household, announce: bool) -> str | None:

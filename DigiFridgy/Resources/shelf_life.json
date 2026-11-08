@@ -886,6 +886,38 @@
    ]
   },
   {
+   "id": "pantry",
+   "name": "Pantry & dry goods",
+   "fridgeDays": 180,
+   "searchTerm": "pasta",
+   "baselinePrice": 2.49,
+   "keywords": [
+    "pantry",
+    "cup noodles",
+    "cup noodle",
+    "instant noodles",
+    "instant ramen",
+    "ramen",
+    "noodle soup",
+    "pasta",
+    "spaghetti",
+    "penne",
+    "macaroni",
+    "dry pasta",
+    "rice",
+    "cereal",
+    "oatmeal",
+    "oats",
+    "canned",
+    "canned beans",
+    "canned soup",
+    "lentils",
+    "flour",
+    "sugar",
+    "pancake mix"
+   ]
+  },
+  {
    "id": "snacks",
    "name": "Snacks & sweets",
    "fridgeDays": 90,

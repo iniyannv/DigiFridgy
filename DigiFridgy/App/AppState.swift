@@ -382,6 +382,22 @@ final class AppState {
         return applyingOverride(to: item)
     }
 
+    /// The scan with the AI's name and category (see `BankStore.describeProduct`). The expiry estimate and
+    /// the allergens implied by the old category follow the new category; the user can still edit everything.
+    func applyingAIGuess(_ item: FridgeItem, name: String?, category: String) -> FridgeItem {
+        guard category == ShelfLifeService.unknownCategoryID || shelfLife.category(id: category) != nil else { return item }
+        var out = item
+        if let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty { out.name = name }
+        if category != item.category {
+            if item.allergens == Allergen.implied(byCategory: item.category).map(\.rawValue) {
+                out.allergens = Allergen.implied(byCategory: category).map(\.rawValue)
+            }
+            out.category = category
+            out.expiresAt = shelfLife.estimatedExpiry(categoryID: category)
+        }
+        return out
+    }
+
     /// Scan result for a barcode: the looked-up product with the user's saved corrections applied,
     /// or just the corrections when Open Food Facts doesn't know the barcode. Nil = unknown product.
     func draftForScan(barcode: String) async throws -> FridgeItem? {

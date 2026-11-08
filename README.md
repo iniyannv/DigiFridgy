@@ -98,6 +98,7 @@ Change the target server or database with `SPACETIME_HOST` / `SPACETIME_DB` in
 | `EDAMAM_APP_ID`, `EDAMAM_APP_KEY` | [developer.edamam.com](https://developer.edamam.com/edamam-recipe-api), Recipe Search API (Developer plan) |
 | `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET` | [developer.kroger.com](https://developer.kroger.com/), register an app, scope `product.compact` |
 | `CALORIENINJAS_KEY` | [calorieninjas.com/api](https://calorieninjas.com/api) |
+| `WALMART_CONSUMER_ID`, `WALMART_KEY_VERSION`, `WALMART_PRIVATE_KEY` | [walmart.io](https://walmart.io/), Affiliate API: upload your RSA public key, put the private key in as one base64url line (command in `Secrets.example.xcconfig`) |
 
 Values must not contain `//`. Any key left empty falls back to its mock. Open Food Facts and openFDA
 need no key. To run on a phone, pick your (free) team under Signing & Capabilities; free provisioning
@@ -106,7 +107,7 @@ profiles expire after 7 days.
 Settings → **Services** shows which integrations are live vs mock.
 
 > ⚠️ **Secrets in the app bundle are demo-only.** Anything in `Info.plist` can be extracted from the
-> IPA. A real release must proxy Edamam, Kroger and CalorieNinjas through a backend.
+> IPA. A real release must proxy Edamam, Kroger, Walmart and CalorieNinjas through a backend.
 
 ## Demo script (~3 min)
 
@@ -159,9 +160,10 @@ always labeled "Est." until the user sets the printed date.
 Receipt names are expanded by the on-device Foundation Model (Apple Intelligence devices) with a
 dictionary fallback; the review screen is mandatory.
 
-Prices: Kroger is live (when keys are set). Walmart, H-E-B, Target, Aldi and Tom Thumb show real
-nearby locations from MapKit with deterministic sample prices (±20% around the Kroger/category
-price), always badged **Sample price**.
+Prices: Kroger is live per store (when keys are set). Walmart shows the walmart.com price from the Walmart
+Affiliate API on every nearby Walmart (badged **Walmart.com**, since shelf prices can differ). H-E-B, Target, Aldi
+and Tom Thumb (and Walmart without a key) show real nearby locations from MapKit with deterministic sample prices
+(±20% around the Kroger/category price), always badged **Sample price**.
 
 ## Build & test from the command line
 

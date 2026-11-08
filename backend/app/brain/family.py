@@ -1,8 +1,9 @@
 """Family group chat: getting a household into one iMessage group with the agent.
 
-Photon can only start a chat from a dedicated (project-owned) line. Shared lines, which sign-up assigns,
-can't send the first message, so there GROUP texts step-by-step instructions instead, and the first
-message in the new group links it to the household and greets everyone in it by name.
+Group chats need a dedicated (project-owned) line: GROUP creates the group there, and the first message
+in a group links it to the household and greets everyone in it by name. Shared lines, which sign-up
+assigns, can't start a chat and never receive messages sent in a group (checked live: Photon has no
+record of them), so on a shared line GROUP says so and everyone texts the agent 1:1 instead.
 
 INVITE <number> adds someone to the household before they've texted. Invited people are guests: they
 share the fridge, list and group chat, but can't start or approve money moves.
@@ -67,11 +68,20 @@ def _agent_number(ctx: Ctx, member: Member | None) -> str | None:
     return (member.assigned_line if member else None) or ctx.settings.photon_agent_handle or None
 
 
+def _active_members(s: Session, hh_id: int) -> list[Member]:
+    """Active members of this household, then of roommates' households (their own card, same app fridge)."""
+    from ..households import linked_household_ids
+    ids = linked_household_ids(s, hh_id)
+    rows = list(s.exec(select(Member).where(Member.household_id.in_(ids), Member.status == "active")
+                       .order_by(Member.id)))
+    return sorted(rows, key=lambda m: (ids.index(m.household_id), m.id))
+
+
 def _others(s: Session, hh_id: int, me: Member | None) -> list[tuple[str | None, str]]:
-    """(name, handle) for everyone else in the household: active members, then open invites."""
+    """(name, handle) for everyone else sharing the fridge: active members (roommates with their own
+    card included), then open invites."""
     out = []
-    for m in s.exec(select(Member).where(Member.household_id == hh_id, Member.status == "active")
-                    .order_by(Member.id)):
+    for m in _active_members(s, hh_id):
         if me is None or m.id != me.id:
             out.append((m.display_name, m.photon_handle))
     for inv in s.exec(select(HouseholdInvite).where(HouseholdInvite.household_id == hh_id,
@@ -79,6 +89,11 @@ def _others(s: Session, hh_id: int, me: Member | None) -> list[tuple[str | None,
                       .order_by(HouseholdInvite.created_at)):
         out.append((inv.name, inv.handle))
     return out
+
+
+def _can_group(ctx: Ctx) -> bool:
+    """Only a dedicated line can be in a group chat (shared lines never receive group messages)."""
+    return bool(ctx.settings.photon_dedicated_line)
 
 
 def _has_group(s: Session, hh_id: int) -> bool:
@@ -98,8 +113,14 @@ def invite(ctx: Ctx, hh: Household, member: Member | None, raw: str, person: str
     with Session(ctx.engine) as s:
         existing = member_by_handle(s, handle)
         if existing is not None:
+            from ..households import same_app_household
             if existing.household_id == hh.id:
-                return f"✅ {label(existing)} is already in {hh.name}. Text GROUP to get everyone in one chat."
+                tail = " Text GROUP to get everyone in one chat." if _can_group(ctx) else ""
+                return f"✅ {label(existing)} is already in {hh.name}.{tail}"
+            if same_app_household(s, existing.household_id, hh.id):
+                # A roommate who connected their own card: they already share this fridge.
+                where = "this group" if in_group else "your shared fridge"
+                return f"✅ {label(existing)} is already in {where}: their own card shares the same fridge."
             return "That number already has its own DigiFridgy household, so I can't add it to yours."
         inv = s.get(HouseholdInvite, handle)
         if inv is not None and inv.household_id != hh.id:
@@ -116,7 +137,7 @@ def invite(ctx: Ctx, hh: Household, member: Member | None, raw: str, person: str
         s.commit()
         has_group = in_group or _has_group(s, hh.id)
         name = inv.name
-    return copy.invited(name, handle, hh.name, _agent_number(ctx, member), has_group)
+    return copy.invited(name, handle, hh.name, _agent_number(ctx, member), has_group, _can_group(ctx))
 
 
 def set_name(ctx: Ctx, member: Member | None, raw: str) -> str:
@@ -132,17 +153,20 @@ def set_name(ctx: Ctx, member: Member | None, raw: str) -> str:
 
 
 async def group_command(ctx: Ctx, hh: Household, member: Member | None, in_group: bool) -> str:
-    """GROUP: start the household group chat (dedicated line), or explain how (shared line)."""
+    """GROUP: start the household group chat (dedicated line). On a shared line, explain that groups
+    don't work there and everyone texts the agent 1:1."""
     with Session(ctx.engine) as s:
         others = _others(s, hh.id, member)
         if in_group:
-            names = [label(m) for m in s.exec(select(Member).where(Member.household_id == hh.id,
-                                                                    Member.status == "active").order_by(Member.id))]
+            names = [label(m) for m in _active_members(s, hh.id)]
             return copy.group_already(hh.name, names)
-    if ctx.settings.photon_dedicated_line and others and member is not None and member.agent_user_id:
+    if not _can_group(ctx):
+        return copy.group_unavailable(others, _agent_number(ctx, member))
+    if others and member is not None and member.agent_user_id:
         created = await _create_group(ctx, hh, member, others)
         if created:
             return created
+    # A dedicated line that couldn't create it (Photon refused, or nobody else yet): start it by hand.
     return copy.group_instructions(hh.name, others, _agent_number(ctx, member))
 
 
@@ -180,8 +204,7 @@ async def group_greeting(ctx: Ctx, hh: Household, space_id: str, linker: Member)
         log.info("couldn't list the people in group %s: %s", space_id, exc)
     from ..signup import normalize_handle
     with Session(ctx.engine) as s:
-        by_handle = {m.photon_handle: m for m in s.exec(select(Member).where(Member.household_id == hh.id,
-                                                                             Member.status == "active"))}
+        by_handle = {m.photon_handle: m for m in _active_members(s, hh.id)}
         invites = {i.handle: i for i in s.exec(select(HouseholdInvite).where(
             HouseholdInvite.household_id == hh.id, HouseholdInvite.member_id == None))}  # noqa: E711
     people, strangers = [label(linker)], []

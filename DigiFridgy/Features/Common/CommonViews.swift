@@ -107,6 +107,7 @@ enum CategoryStyle {
         case "fresh_pasta", "prepared_meals": "🍝"
         case "pizza": "🍕"
         case "beverages": "🥤"
+        case "pantry": "🥫"
         case "snacks": "🍫"
         default: "🛒"
         }

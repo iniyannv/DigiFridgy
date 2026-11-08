@@ -39,6 +39,7 @@ struct RecipeCard: View {
 
     private func metaRow(showCalories: Bool, chip: String) -> some View {
         HStack(spacing: 10) {
+            StatusChip(text: scored.recipe.difficulty.label, tone: scored.recipe.difficulty.tone).fixedSize()
             if let minutes = scored.recipe.totalTimeMinutes {
                 Label("\(Int(minutes)) min", systemImage: "clock").fixedSize()
             }
@@ -86,6 +87,7 @@ struct RecipeCard: View {
     private var accessibilityText: String {
         var parts = [Self.displayTitle(scored.recipe.title)]
         if isSaved { parts.append("saved") }
+        parts.append(scored.recipe.difficulty.label.lowercased())
         if !scored.uses.isEmpty { parts.append("uses \(scored.uses.map(\.itemName).joined(separator: ", "))") }
         if scored.expiringCount > 0 { parts.append("\(scored.expiringCount) expiring soon") }
         parts.append(scored.missing.isEmpty ? "nothing missing" : "missing \(scored.missing.count)")

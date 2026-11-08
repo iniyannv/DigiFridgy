@@ -70,3 +70,49 @@ nonisolated struct ScoredRecipe: Identifiable, Hashable, Sendable {
 
     var expiringCount: Int { uses.filter(\.isExpiringSoon).count }
 }
+
+// MARK: - Difficulty
+
+/// How hard a recipe is from its total time and how many ingredients it needs (pantry basics don't count).
+/// Same rule as the backend's `recipes.difficulty`, so iMessage and the app agree.
+nonisolated enum RecipeDifficulty: Int, CaseIterable, Comparable, Sendable {
+    case easy, medium, hard
+
+    init(minutes: Double?, ingredientCount: Int) {
+        let time = minutes.map { $0 <= 20 ? 0 : $0 <= 45 ? 1 : 2 } ?? 1
+        let size = ingredientCount <= 6 ? 0 : ingredientCount <= 11 ? 1 : 2
+        self = RecipeDifficulty(rawValue: min(2, max(0, time + size - 1))) ?? .medium
+    }
+
+    static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+
+    var label: String {
+        switch self {
+        case .easy: "Easy"
+        case .medium: "Medium"
+        case .hard: "Hard"
+        }
+    }
+}
+
+extension RecipeDifficulty {
+    var tone: Tone {
+        switch self {
+        case .easy: .success
+        case .medium: .warning
+        case .hard: .danger
+        }
+    }
+}
+
+extension Recipe {
+    /// Ingredients you'd actually gather (salt, oil and other pantry basics left out).
+    nonisolated var realIngredientCount: Int {
+        Set(ingredients.map { $0.food.lowercased().trimmingCharacters(in: .whitespaces) })
+            .filter { !$0.isEmpty && !RecipeScorer.pantryStaples.contains($0) }.count
+    }
+
+    nonisolated var difficulty: RecipeDifficulty {
+        RecipeDifficulty(minutes: totalTimeMinutes, ingredientCount: realIngredientCount)
+    }
+}

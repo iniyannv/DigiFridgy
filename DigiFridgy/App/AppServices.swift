@@ -10,6 +10,7 @@ final class AppServices {
     let recipes: any RecipeService
     let recalls: any RecallService
     let kroger: any KrogerService
+    let walmart: any WalmartService
     let storeSearch: any StoreSearchService
     let location: any LocationService
     let ocr: any ReceiptTextRecognizer
@@ -27,7 +28,8 @@ final class AppServices {
     init(isMock: Bool, auth: any AuthService, repository: any HouseholdRepository,
          products: any ProductLookupService, recipes: any RecipeService, recalls: any RecallService,
          kroger: any KrogerService, storeSearch: any StoreSearchService, location: any LocationService,
-         ocr: any ReceiptTextRecognizer, normalizer: any ReceiptNormalizer, notifications: any NotificationService) {
+         ocr: any ReceiptTextRecognizer, normalizer: any ReceiptNormalizer, notifications: any NotificationService,
+         walmart: any WalmartService = MockWalmartService()) {
         self.isMock = isMock
         self.auth = auth
         self.repository = repository
@@ -35,6 +37,7 @@ final class AppServices {
         self.recipes = recipes
         self.recalls = recalls
         self.kroger = kroger
+        self.walmart = walmart
         self.storeSearch = storeSearch
         self.location = location
         self.ocr = ocr
@@ -103,7 +106,8 @@ final class AppServices {
             location: CoreLocationService(),
             ocr: VisionReceiptTextRecognizer(),
             normalizer: SmartReceiptNormalizer(),
-            notifications: LocalNotificationService()
+            notifications: LocalNotificationService(),
+            walmart: Secrets.hasWalmart ? LiveWalmartService() : MockWalmartService()
         )
     }
 
@@ -134,6 +138,7 @@ final class AppServices {
             ("CalorieNinjas", !isMock && Secrets.hasCalorieNinjas),
             ("Edamam recipes", !isMock && Secrets.hasEdamam),
             ("Kroger prices", !isMock && Secrets.hasKroger),
+            ("Walmart.com prices", !isMock && Secrets.hasWalmart),
             // USDA FSIS (meat, poultry, egg products) has no public API an app can call.
             ("Recalls: FDA only (openFDA)", !isMock),
             ("On-device model (receipts)", normalizer.usesOnDeviceModel),

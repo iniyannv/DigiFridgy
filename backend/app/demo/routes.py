@@ -457,3 +457,24 @@ async def roommate_uses(request: Request, household_id: int, body: UseBody):
     await _sync_app(ctx)
     request_sync(ctx)
     return {"reply": reply}
+
+
+class DescribeBody(BaseModel):
+    name: str
+    brand: str | None = None
+    categories: list[str]
+
+
+@router.post("/product/describe")
+async def describe_product(request: Request, body: DescribeBody):
+    """AI help for a scanned product: a short everyday name and the category it really is (one of
+    `categories`, the app's own list). {"ok": false} when no LLM is set up or it gave no usable answer;
+    the app then keeps its keyword match."""
+    from ..brain import product_ai
+    ctx = _ctx(request)
+    if await app_caller(request, required=False) is None and not is_operator(request):
+        raise HTTPException(401, "Sign in to the app first (missing app token).")
+    guess = await product_ai.describe(ctx, body.name[:200], (body.brand or "")[:100] or None, body.categories[:100])
+    if guess is None:
+        return {"ok": False}
+    return {"ok": True, "name": guess.name, "category": guess.category, "storage": guess.storage}

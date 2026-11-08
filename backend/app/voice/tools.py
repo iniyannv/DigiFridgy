@@ -1,16 +1,18 @@
 """Server tools for the ElevenLabs voice agent (calls arrive via Photon SIP).
 
 Every request needs header `X-Tool-Secret: $VOICE_TOOL_SECRET`. Responses are
-short sentences meant to be spoken (no emoji). In DEMO_MODE they act on the
-demo household; otherwise pass ?handle=<caller's iMessage handle>.
+short sentences meant to be spoken (no emoji). Pass ?handle=<caller's number>: in
+ElevenLabs that's `{{system__caller_id}}`, in any format ("+1 (945) 328-8573" works).
+In DEMO_MODE an unknown caller gets the demo household.
 """
 from __future__ import annotations
 
 import hmac
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, func, select
 
 from ..brain import copy
 from ..brain.commands import add_to_list, check_units
@@ -33,10 +35,12 @@ router = APIRouter(prefix="/voice/tools", dependencies=[Depends(require_secret)]
 
 
 def _household(request: Request, handle: str | None) -> Household:
+    from ..signup import normalize_handle
     ctx = request.app.state.ctx
     with Session(ctx.engine) as s:
         if handle:
-            m = member_by_handle(s, handle)
+            # Caller ID arrives as "+19453288573", "19453288573" or "(945) 328-8573": same person.
+            m = member_by_handle(s, normalize_handle(handle) or handle) or member_by_handle(s, handle)
             if m:
                 return s.get(Household, m.household_id)
         if ctx.settings.demo_mode:
@@ -44,6 +48,15 @@ def _household(request: Request, handle: str | None) -> Household:
             if hh:
                 return hh
     raise HTTPException(404, "no household for this caller")
+
+
+_NOT_SPOKEN = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
+
+
+def _speak(text: str) -> str:
+    """Chat text -> something a voice can read: no emoji, no "Reply 1-3" instructions."""
+    text = _NOT_SPOKEN.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _say_day(label: str) -> str:
@@ -97,3 +110,48 @@ async def list_add(request: Request, body: AddBody):
                            f"voice:add:{body.item.lower()[:40]}:{ctx.clock.real_now().timestamp():.0f}")
     spoken = reply.replace("🛒 ", "")
     return {"text": spoken + " I also texted you."}
+
+
+@router.get("/expiring")
+async def expiring(request: Request, handle: str | None = None):
+    """What to use soon, spoken."""
+    ctx = request.app.state.ctx
+    hh = _household(request, handle)
+    with Session(ctx.engine) as s:
+        soon = inventory.use_soon(s, hh.id, ctx.clock.now())
+    if not soon:
+        return {"text": "Nothing is about to expire. You're good for the next couple of days.", "count": 0}
+    names = list(dict.fromkeys(f"{i.name} {_say_day(copy.day_label(i.expires_at, ctx.clock))}" for i in soon))
+    return {"text": "Use these soon: " + ", ".join(names[:5]) + ". Want recipe ideas that use them?",
+            "count": len(soon)}
+
+
+@router.get("/recipes")
+async def recipes_tool(request: Request, handle: str | None = None, item: str | None = None,
+                       expiring: bool = True):
+    """Up to 3 recipe names, spoken. With `item`, recipes with that ingredient; otherwise (by default)
+    recipes that use what's about to expire. The full list is texted too, so a reply with a number
+    shows the ingredients, like any RECIPES text."""
+    from ..brain import pending, recipes
+    from ..models import PendingAction
+    ctx = request.app.state.ctx
+    hh = _household(request, handle)
+    with Session(ctx.engine) as s:
+        before = s.exec(select(func.max(PendingAction.id)).where(PendingAction.household_id == hh.id)).first() or 0
+    if item and item.strip():
+        text = await recipes.suggest(ctx, hh.id, item.strip()[:40])
+    elif expiring:
+        text = await recipes.suggest_expiring(ctx, hh.id)
+    else:
+        text = await recipes.suggest(ctx, hh.id, None)
+    with Session(ctx.engine) as s:
+        a = pending.latest(s, hh.id, ("recipes",))
+        shown = pending.payload(a).get("recipes", []) if a and a.id > before else []
+    if not shown:
+        return {"text": _speak(text.split("\n")[0]), "count": 0}
+    await notify_household(ctx, hh.id, f"📞 From your call: {text}",
+                           f"voice:recipes:{(item or '').lower()[:30]}:{ctx.clock.real_now().timestamp():.0f}")
+    names = [r["name"] for r in shown]
+    spoken = (names[0] if len(names) == 1 else ", ".join(names[:-1]) + ", or " + names[-1])
+    return {"text": f"You could make {spoken}. I texted you the list. Reply with a number for the ingredients.",
+            "count": len(names)}

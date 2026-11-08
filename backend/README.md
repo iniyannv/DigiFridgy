@@ -138,11 +138,33 @@ With `LLM_API_KEY` set, Gemini classifies messages the keyword rules don't recog
 recipes for what's in the fridge. It can never produce YES, NO, STOP, ADD ALL, GROUP or INVITE; those
 must be typed.
 
+If neither the keyword rules nor the classifier recognize a message, Gemini answers it in conversation
+("is wilted spinach still ok?", "how long do eggs last?") using the fridge, what expires soon and the
+shopping list as facts. That path only writes text: it can't change the fridge, the list or money, and a
+reply that claims it did something is dropped. In the group chat it stays quiet when people are talking
+to each other. With no key, or if the call fails, the reply is the usual "Sorry, I didn't get that".
+
+`LLM_MODEL` defaults to `gemini-3.5-flash` (Gemini 2.5 Flash is closed to new API keys). When it's
+overloaded, rate-limited or slow, calls fall through to `LLM_FALLBACK_MODELS` (comma-separated, default
+`gemini-3.5-flash-lite`), and the busy model is skipped for a minute. Gemini 3 models run with low thinking
+so their thinking doesn't use up the small output limits.
+
 **Recipes and ingredients** ([`brain/recipes.py`](app/brain/recipes.py)). `RECIPES` ranks recipes the way
 the app's `RecipeScorer` does: +3 for each ingredient you have that expires within 3 days, +1 for each
 other one you have, −1 for each you'd need to buy (salt, oil and other pantry basics don't count). It
 replies with up to 3 numbered recipes, soonest-expiring food first. `RECIPES WITH chicken` (or "chicken
-recipes", "how do I use up the spinach?") only shows recipes with that ingredient. Reply a number
+recipes", "how do I use up the spinach?") only shows recipes with that ingredient. "What can I make with
+what's expiring?" (or "expiring recipes", "use up what's going bad", or `USE THEM UP` right after `EXPIRING`)
+only shows recipes that use something from the ⏰ Use soon list, the ones using the most of it first; the
+app's Recipes tab has the same thing as **Must include** chips (one expiring item, several, or "All
+expiring"). Every recipe shows its time and difficulty ("Chicken quesadillas (15 min · easy)"). Difficulty
+comes from time plus how many ingredients it needs, using the same rule in the app (`RecipeDifficulty`) and
+here (`recipes.difficulty`). "Easy recipes", "quick dinner ideas" (20 min or less), "recipes under 30
+minutes" and "easy recipes with chicken" filter to match, and they can be combined with "what's expiring".
+When nothing fits, the reply says so and suggests the usual recipes. In the app, the Recipes tab's
+filter menu sorts by best match, easiest, quickest, fewest to buy, uses most expiring or fewest calories.
+It filters by difficulty, time limit and "nothing to buy", and remembers the sort between launches.
+Reply a number
 (or `RECIPE 2`) to see that recipe's ingredients with what you have, what's missing, and what's already
 on your list; it then asks "Add the missing ones to your shopping list? Reply YES or NO" (a tapback or the
 app's *Waiting on a yes* card answers it too). `INGREDIENTS` lists what you have to cook with, use-first
@@ -186,16 +208,31 @@ published; USED by text counts either way.
   Photon can only start a chat from a **dedicated** line (`POST /v1/projects/{id}/spaces` needs a
   project-owned line as the first participant); shared lines, which sign-up assigns, can't send the
   first message. So:
-  - **Shared line (default):** `GROUP` texts instructions: "start a new group with Sam (555) 555-0199,
-    Mom (469) 555-0123 and me at (555) 010-0000, then send anything in it."
-  - **Dedicated line** (`PHOTON_DEDICATED_LINE=true`): `GROUP` creates the group with everyone in the
-    household and posts the greeting there. If Photon refuses, it falls back to the instructions.
+  - **Shared line (default):** group chats don't work. Messages someone sends in an iMessage group that
+    includes a shared line never reach Photon (checked live: `GET /messages` has no record of them, only
+    1:1 messages). So `GROUP` doesn't suggest making one. It says so, tells everyone to text the agent
+    1:1 (they share one fridge and list), and lists who's sharing it. `INVITE` replies don't mention
+    `GROUP` either.
+  - **Dedicated line** (`PHOTON_DEDICATED_LINE=true`, Photon's Business plan): `GROUP` creates the group
+    with everyone in the household and posts the greeting there. If Photon refuses, it texts instructions
+    for starting the group by hand ("start a new group with Sam (555) 555-0199 and me, then send anything
+    in it").
 
   The first member who texts in a new group links it to their household, and the agent greets everyone
   in it by name (it reads the group's participants from Photon) and points out numbers that aren't in the
   household yet. After that it answers any member, and replies go to the whole group. Someone who isn't
   a member gets one short explanation ("I only answer people in the household; anyone can text
   INVITE <your number>"), then silence. A group with no household member in it gets no reply at all.
+
+  **Roommates with their own cards work in the group too.** Each "Connect your bank" sign-up is its own
+  bank household, but sign-ups that used the same app fridge code share one app household
+  (`SpacetimeLink.app_household_id`). In the group, a roommate whose bank is linked to the same app
+  household as the group's household counts as a member: they're greeted by name, their messages are
+  answered in the group, and fridge, list, claims, recipes, photos and `EXPIRING` act on the shared
+  fridge (claims show the roommate's own name). `MONEY`, `BUDGET`, `SETTLE`, `TRIPS`, `APP` and `LINK`
+  act on their own bank, and a money YES in the group is still refused. `INVITE` of a roommate's number
+  replies that they're already in. Numbers whose bank isn't linked to the same app household are still
+  strangers.
 - **Invites.** `INVITE Mom (469) 555-0123` (or "add +1469… to the group") adds a number to your household
   before they've texted. When they text the agent, 1:1 or in the household group, they join and get a
   welcome that says who added them. `CALL ME Sam` sets the name the group sees. A number that already has
@@ -212,6 +249,16 @@ published; USED by text counts either way.
   looks it up on Open Food Facts, and matches it to the catalog: "🏷️ Scanned: 1) 🥛 whole milk (Horizon
   Organic Whole Milk). Add it?" Things the fridge doesn't track (chips, soda) are named and skipped. If
   Open Food Facts doesn't know the code and `LLM_API_KEY` is set, Gemini reads the packaging instead.
+- **AI naming and categorizing for app scans** ([`brain/product_ai.py`](app/brain/product_ai.py)). Label
+  names are messy ("Cup Noodles Chicken Flavor 2.25oz") and keyword matching on them can be wrong (that one
+  matched *chicken*, a 2-day shelf life). After a barcode scan the app calls `POST /demo/product/describe`
+  with the label name, brand and its own category ids. Gemini returns a short everyday name and the
+  category the product really is, which must be one of those ids. The app shows "✨ Name and category
+  suggested by AI" on the confirm screen, and the person can still edit both. Answers are cached per
+  product. With no `LLM_API_KEY`, a slow server or a bad answer, the app keeps its keyword match. A
+  barcode's saved corrections always win. The app's new **Pantry & dry goods** category (noodles, rice,
+  pasta, cereal, canned food) means that keyword match now puts Cup Noodles in the pantry anyway. Items
+  synced from the app keep the app's category here, instead of the backend re-guessing from the name.
 - **Answer in either place.** Every YES/NO question (stock a card purchase, add a photo's items, add
   staples, still have it?, budget sweep, settle-up) is also posted to SpacetimeDB's `approval` table. The
   app shows it under *Waiting on a yes* with Yes / Not now. Whichever answer comes first wins; the other
@@ -239,8 +286,18 @@ reachable, e.g. through a tunnel). Every call needs header `X-Tool-Secret: $VOIC
 | fridge summary | `GET /voice/tools/fridge` | `{"text": "You have 12 items. Use soon: spinach tomorrow…"}` |
 | check an item | `GET /voice/tools/check?item=eggs` | `{"text": "You have no eggs. Want me to add eggs to your list?", "have": 0}` |
 | add to list | `POST /voice/tools/list/add` `{"item": "eggs"}` | `{"text": "Added eggs to your list. I also texted you."}` + an iMessage confirmation |
+| what's expiring | `GET /voice/tools/expiring` | `{"text": "Use these soon: spinach tomorrow, chicken breast by Mon. Want recipe ideas that use them?"}` |
+| recipe ideas | `GET /voice/tools/recipes` (or `?item=eggs`) | `{"text": "You could make … I texted you the list. Reply with a number for the ingredients."}` + the list over iMessage |
 
-In DEMO_MODE the tools use the demo household; otherwise pass `handle=<caller's iMessage handle>`.
+Pass `handle={{system__caller_id}}` (ElevenLabs' caller number) on every tool: any format works
+("+19453288573", "(945) 328-8573"). In DEMO_MODE an unknown caller gets the demo household.
+
+**Photon setup** (Pro plan, a local US number, $2/month; shared iMessage lines can't take calls):
+Photon project → Voice → the number under Lines → Set up default → SIP → Create profile. In ElevenLabs:
+Deploy → Phone Numbers → Import number → From SIP Trunk (the number with +1, inbound media encryption
+Allowed) and assign the agent. Back in Photon: Inbound calls → Enable inbound, destination
+`sips:sip.rtc.elevenlabs.io:5061`, transport TLS, media encryption Auto. The tools must be reachable
+over HTTPS, e.g. `cloudflared tunnel --url http://localhost:8001`.
 
 ## Webhook (optional upgrade over polling)
 

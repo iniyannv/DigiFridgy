@@ -41,7 +41,9 @@ class Settings:
     public_url: str = ""  # e.g. https://abc.trycloudflare.com: registers the Photon webhook at startup
     voice_tool_secret: str = ""
     llm_api_key: str = ""
-    llm_model: str = "gemini-2.5-flash"
+    llm_model: str = "gemini-3.5-flash"
+    # Tried in order when the main model is overloaded, rate-limited, retired or too slow.
+    llm_fallback_models: tuple[str, ...] = ("gemini-3.5-flash-lite",)
     demo_mode: bool = True
     demo_token: str = ""
     admin_token: str = ""  # presenter-only actions (reset with wipe_nessie, picking any household)
@@ -99,6 +101,7 @@ class Settings:
             voice_tool_secret=e("VOICE_TOOL_SECRET", ""),
             llm_api_key=e("LLM_API_KEY", ""),
             llm_model=e("LLM_MODEL", "") or cls.llm_model,
+            llm_fallback_models=tuple(_list("LLM_FALLBACK_MODELS")) or cls.llm_fallback_models,
             demo_mode=_bool("DEMO_MODE", True),
             demo_token=e("DEMO_TOKEN", ""),
             admin_token=e("ADMIN_TOKEN", ""),

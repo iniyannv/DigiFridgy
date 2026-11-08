@@ -89,7 +89,7 @@ def expiring(items, clock) -> str:
     if not items:
         return "✅ Nothing expires in the next 2 days."
     lines = ["⏰ Use soon:"] + [_line(g, clock) for g in _grouped(items).values()]
-    lines.append("Reply RECIPES for ideas")
+    lines.append("Reply USE THEM UP for recipes with these")
     return "\n".join(lines)
 
 
@@ -200,6 +200,11 @@ def over_budget(ins) -> str:
             "Nothing left to move to Grocery Fund this time.")
 
 
+def already_swept(amount: float) -> str:
+    return (f"🏦 You already moved {usd(amount)} to Grocery Fund this week.\n"
+            "Nothing new to move until next week.")
+
+
 def transfer_done(amount: float, checking: float | None, fund: float | None) -> str:
     return (f"✅ Moved {usd(amount)} → Grocery Fund\n"
             f"Checking: {usd(checking)} · Grocery Fund: {usd(fund)}")
@@ -272,20 +277,27 @@ def _names(pairs, n: int) -> str:
     return shown + (f" +{len(pairs) - n} more" if len(pairs) > n else "")
 
 
-def recipes_list(rows: list[tuple[str, list[tuple[str, str]], list[str]]], focus: str | None = None,
-                 have_focus: bool = True, no_recipe_for: str | None = None) -> str:
-    """rows: (recipe name, [(item you have, day label)] soonest first, [missing ingredient])."""
-    if no_recipe_for:
+def recipes_list(rows: list[tuple], focus: str | None = None, have_focus: bool = True,
+                 no_recipe_for: str | None = None, what: str | None = None, none_fit: str | None = None) -> str:
+    """rows: (recipe name, [(item you have, day label)] soonest first, [missing ingredient], optional
+    "15 min · easy"). `what`: "easy recipes" etc. for an easy/quick ask; `none_fit`: none were that easy."""
+    if none_fit:
+        head = f"🤔 No {none_fit} for what's in your fridge right now. Here's what you can make:"
+    elif no_recipe_for:
         head = f"🤔 I don't have a recipe with {no_recipe_for} yet. Here's what your fridge can make:"
     elif focus and not have_focus:
         head = f"🍳 You're out of {focus}, but here's what it goes in:"
     elif focus:
-        head = f"🍳 Recipes with the {focus}, soonest-expiring food first:"
+        head = f"🍳 {(what or 'recipes').capitalize()} with the {focus}, soonest-expiring food first:"
+    elif what:
+        head = f"🍳 {what.capitalize()} you can make, soonest-expiring food first:"
     else:
         head = "🍳 What you can make, soonest-expiring food first:"
     out = [head]
-    for n, (name, have, missing) in enumerate(rows, 1):
-        out.append(f"{n}) {name}")
+    for n, row in enumerate(rows, 1):
+        name, have, missing = row[:3]
+        info = row[3] if len(row) > 3 else None
+        out.append(f"{n}) {name}" + (f" ({info})" if info else ""))
         parts = []
         if have:
             parts.append("uses " + _names(have, 2))
@@ -297,6 +309,21 @@ def recipes_list(rows: list[tuple[str, list[tuple[str, str]], list[str]]], focus
     count = len(rows)
     out.append("Reply 1 for the ingredients." if count == 1 else f"Reply 1-{count} for the ingredients.")
     return "\n".join(out)
+
+
+def recipes_expiring(expiring: list[tuple[str, str]], rows: list, none_use_them: bool = False,
+                     what: str | None = None, none_fit: str | None = None) -> str:
+    """Recipes that use what's about to expire. expiring: (item, day label) soonest first."""
+    if not expiring:
+        head = "✅ Nothing's about to expire. Here's what you can make:"
+    elif none_use_them:
+        head = f"🤔 None of my recipes use {_names(expiring, 3)} yet. Here's what your fridge can make:"
+    elif none_fit:
+        head = f"🤔 No {none_fit} use {_names(expiring, 3)}. These do:"
+    else:
+        head = f"⏰ {(what or 'recipes').capitalize()} that use what's about to expire ({_names(expiring, 3)}):"
+    body = recipes_list(rows).split("\n", 1)[1]  # same numbered rows and "Reply 1-3" as RECIPES
+    return head + "\n" + body
 
 
 def recipe_detail(name: str, have: list[tuple[str, str]], missing: list[str], on_list: list[str],
@@ -387,6 +414,20 @@ def group_instructions(hh_name: str, others: list[tuple[str, str]], agent: str |
     return "\n".join(lines)
 
 
+def group_unavailable(others: list[tuple[str | None, str]], agent: str | None) -> str:
+    """GROUP on a shared line. Photon's shared lines never receive messages sent in a group chat, so a
+    group with the agent in it would get no answers: everyone texts the agent 1:1 instead."""
+    me = f"me at {pretty_handle(agent)}" if agent else "this number"
+    lines = ["👪 I can't answer in group chats on this line, so a group with me in it won't get replies.",
+             f"Instead, everyone texts {me} directly. You all share the same fridge and shopping list."]
+    if others:
+        lines.append(f"Sharing it now: {join_names([n or pretty_handle(h) for n, h in others[:6]])}.")
+        lines.append("Adding someone? Text INVITE <their number>, like INVITE Mom (469) 555-0123.")
+    else:
+        lines.append("Add your family or roommates: text INVITE <their number>, like INVITE Mom (469) 555-0123.")
+    return "\n".join(lines)
+
+
 def group_created(names: list[str]) -> str:
     return f"✅ Started a group chat with {join_names(names)} and me. Say hi there!"
 
@@ -396,12 +437,15 @@ def group_already(hh_name: str, names: list[str]) -> str:
     return f"✅ This chat is already {hh_name}'s fridge chat.{who} Text INVITE <number> to add someone."
 
 
-def invited(name: str | None, handle: str, hh_name: str, agent: str | None, has_group: bool) -> str:
+def invited(name: str | None, handle: str, hh_name: str, agent: str | None, has_group: bool,
+            can_group: bool = True) -> str:
+    """`can_group`: GROUP can set up a group chat (a dedicated line). On a shared line it can't."""
     who = f"{name} ({pretty_handle(handle)})" if name else pretty_handle(handle)
     reach = f"text me at {pretty_handle(agent)}" if agent else "text this number"
-    where = "or add them to your group chat with me" if has_group else "or text GROUP to get everyone in one chat"
+    where = (", or add them to your group chat with me" if has_group
+             else ", or text GROUP to get everyone in one chat" if can_group else "")
     return (f"✅ {who} is invited to {hh_name}.\n"
-            f"I can't text first, so ask them to {reach}, {where}.\n"
+            f"I can't text first, so ask them to {reach}{where}.\n"
             "They'll see the fridge and list. Money still needs your own YES.")
 
 

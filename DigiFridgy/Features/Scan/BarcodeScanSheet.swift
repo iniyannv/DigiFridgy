@@ -5,6 +5,9 @@ import Vision
 /// Scan → look up → (increment existing | confirm new | ask for a name when unknown).
 struct BarcodeScanSheet: View {
     @Environment(AppState.self) private var app
+    @Environment(BankStore.self) private var bank
+    /// The shown name and category came from the AI (not the label and keyword match).
+    @State private var aiNamed = false
     @Environment(\.dismiss) private var dismiss
 
     enum Stage: Equatable {
@@ -44,6 +47,7 @@ struct BarcodeScanSheet: View {
                     if let draft {
                         ItemConfirmationView(draft: draft,
                                              usesSavedCorrections: app.hasSavedCorrections(barcode: draft.barcode),
+                                             aiSuggested: aiNamed,
                                              isSaving: isSaving) { saved in
                             guard !isSaving else { return }
                             isSaving = true
@@ -177,7 +181,18 @@ struct BarcodeScanSheet: View {
         stage = .lookingUp(code)
         Task {
             do {
-                if let scanned = try await app.draftForScan(barcode: code) {
+                if var scanned = try await app.draftForScan(barcode: code) {
+                    aiNamed = false
+                    // The user's own corrections for this barcode win; otherwise ask the AI to tidy the
+                    // label name and pick the real category (a flavor isn't an ingredient).
+                    if !app.hasSavedCorrections(barcode: scanned.barcode),
+                       let guess = await bank.describeProduct(name: scanned.name, brand: scanned.brand,
+                                                              categories: app.shelfLife.categories.map(\.id)),
+                       let category = guess.category {
+                        let tidied = app.applyingAIGuess(scanned, name: guess.name, category: category)
+                        aiNamed = tidied.name != scanned.name || tidied.category != scanned.category
+                        scanned = tidied
+                    }
                     draft = scanned
                     lookedUp = scanned
                     stage = .confirm

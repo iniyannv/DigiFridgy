@@ -37,7 +37,8 @@ def build_ctx(settings: Settings | None = None) -> Ctx:
     photon = (MockPhotonClient(settings.photon_agent_handle or "+15550100000",
                                 dedicated=settings.photon_dedicated_line) if settings.use_mock_photon
               else PhotonClient(settings.photon_api_key, settings.photon_project_id, settings.photon_base_url))
-    llm = GeminiLLM(settings.llm_api_key, settings.llm_model) if settings.llm_api_key else None
+    llm = GeminiLLM(settings.llm_api_key, settings.llm_model,
+                    settings.llm_fallback_models) if settings.llm_api_key else None
     from .spacetime.client import MockSpacetimeClient, SpacetimeClient
     spacetime = (MockSpacetimeClient() if settings.use_mock_spacetime
                  else SpacetimeClient(settings.spacetime_host, settings.spacetime_db))

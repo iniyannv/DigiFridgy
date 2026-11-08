@@ -1,4 +1,5 @@
 """Recipes and ingredients over text, and getting a household into one group chat."""
+import re
 from datetime import timedelta
 
 import pytest
@@ -144,7 +145,7 @@ def test_no_leaves_the_list_alone(cook):
 def test_focus_ingredient_only_shows_recipes_with_it(cook):
     reply = text(cook, "what can I cook with the spinach?")
     assert reply.startswith("🍳 Recipes with the spinach")
-    names = [ln[3:] for ln in reply.splitlines() if ln[:1].isdigit()]
+    names = [ln[3:].rsplit(" (", 1)[0] for ln in reply.splitlines() if ln[:1].isdigit()]
     with_spinach = {r["name"] for r in recipes.TEMPLATES if "spinach_5oz" in [i["sku"] for i in r["ingredients"]]}
     assert names and set(names) <= with_spinach
 
@@ -239,18 +240,30 @@ def family(seeded):
     return ctx
 
 
-def test_group_on_a_shared_line_texts_instructions(family):
+def test_group_on_a_shared_line_says_text_me_directly(family):
+    # Shared lines never receive group messages, so no "start a group by hand" steps that would go unanswered.
     reply = text(family, "group")
-    assert reply.startswith("👪 Get the household in one chat:")
-    assert "start a new group with Sam (555) 555-0199 and me at (555) 010-0000" in reply
-    assert "say hi to everyone by name" in reply
+    assert reply.startswith("👪 I can't answer in group chats on this line")
+    assert "everyone texts me at (555) 010-0000 directly" in reply
+    assert "Sharing it now: Sam." in reply and "start a new group" not in reply
     assert family.photon.outbox[-1]["spaceId"] == family.photon.space_for(HANDLE)  # only the 1:1 chat
+    assert not family.photon.participants  # no group was created
 
 
 def test_group_alone_says_to_invite_first(seeded):
     text(seeded, "hi")
     reply = text(seeded, "group")
     assert "your family or roommates" in reply and "INVITE" in reply
+
+
+def test_invite_mentions_group_only_on_a_dedicated_line(family):
+    ctx = family
+    shared = text(ctx, "invite Mom (469) 555-0123")
+    assert "GROUP" not in shared and "ask them to text me at (555) 010-0000.\n" in shared
+    assert "GROUP" not in text(ctx, "invite +15555550199")  # Sam's already in
+    ctx.settings.photon_dedicated_line = True
+    assert "or text GROUP to get everyone in one chat" in text(ctx, "invite Jordan +15555550177")
+    assert "Text GROUP to get everyone in one chat" in text(ctx, "invite +15555550199")
 
 
 def test_group_on_a_dedicated_line_creates_it(family):
@@ -358,3 +371,112 @@ def test_mock_text_endpoint_with_group_and_members(family):
     assert "fridge is empty" in r["conversation"][-1]["text"]
     r = c.post("/demo/mock/text", json={"handle": STRANGER, "text": "hello?", "group": "house"}).json()
     assert "only answer people in the household" in r["conversation"][-1]["text"]
+
+
+# ---------- recipes that use what's about to expire ----------
+
+@pytest.mark.parametrize("msg", ["what can I make with what's expiring?", "recipes with stuff that's about to expire",
+                                 "expiring recipes", "use up whatever is going bad", "use them up",
+                                 "what can I cook with the food that's going bad"])
+def test_expiring_recipe_requests_route(msg):
+    got = keyword_intent(msg)
+    assert got is not None and got.name == "dinner" and recipes.wants_expiring(got.item)
+
+
+def test_plain_expiring_still_lists_what_expires():
+    assert keyword_intent("what's expiring?").name == "expiring"
+    assert not recipes.wants_expiring("spinach") and not recipes.wants_expiring(None)
+
+
+def test_recipes_with_whats_expiring_only_use_expiring_food(cook):
+    ctx = cook
+    expiring = text(ctx, "what's expiring?")
+    assert "spinach" in expiring and "chicken" in expiring and expiring.endswith("Reply USE THEM UP for recipes with these")
+    reply = text(ctx, "use them up")
+    lines = reply.splitlines()
+    assert lines[0].startswith("⏰ Recipes that use what's about to expire (spinach (tomorrow), chicken breast")
+    rows = [ln for ln in lines if ln.startswith("   uses ")]
+    assert rows and all("spinach" in r or "chicken" in r for r in rows)
+    assert reply.endswith("Reply 1-3 for the ingredients.") or reply.endswith("for the ingredients.")
+    # A number still opens the recipe, like plain RECIPES.
+    assert text(ctx, "1").startswith("🍳 ")
+
+
+def test_recipes_with_the_most_expiring_items_come_first(cook):
+    ctx = cook
+    reply = text(ctx, "what can I make with what's expiring?")
+    first = reply.splitlines()[2]
+    assert "spinach" in first and "chicken" in first  # uses both expiring items
+
+
+def test_nothing_expiring_says_so_and_still_suggests(seeded):
+    ctx = seeded
+    text(ctx, "hi")
+    stock(ctx, {"eggs_dozen": 12, "rice_2lb": 90, "cheddar_block_16oz": 20})
+    reply = text(ctx, "what can I make with what's expiring?")
+    assert reply.startswith("✅ Nothing's about to expire. Here's what you can make:")
+    assert "1) " in reply
+
+
+# ---------- difficulty, "easy" / "quick" / "under N min" ----------
+
+def test_difficulty_rule_matches_the_app():
+    assert recipes.difficulty(15, 4) == "easy" and recipes.difficulty(25, 5) == "easy"
+    assert recipes.difficulty(40, 8) == "medium" and recipes.difficulty(70, 5) == "medium"
+    assert recipes.difficulty(90, 14) == "hard" and recipes.difficulty(None, 14) == "hard"
+
+
+@pytest.mark.parametrize("msg,minutes,easy,rest", [
+    ("easy recipes", None, True, None),
+    ("quick dinner ideas", 20, False, None),
+    ("recipes under 30 minutes", 30, False, None),
+    ("what can I make in 15 min", 15, False, None),
+    ("easy recipes with chicken", None, True, "chicken"),
+    ("quick recipes with what's expiring", 20, False, "what's expiring"),
+])
+def test_easy_and_quick_asks_route(msg, minutes, easy, rest):
+    got = keyword_intent(msg)
+    assert got is not None and got.name == "dinner"
+    w = recipes.wants_of(got.item)
+    assert (w.max_minutes, w.easy, w.rest) == (minutes, easy, rest)
+
+
+def test_plain_asks_are_unchanged():
+    assert keyword_intent("what can I make?").name == "dinner" and keyword_intent("what can I make?").item is None
+    assert keyword_intent("chicken recipes").item == "chicken"
+    got = keyword_intent("quick question")
+    assert got is None or got.name != "dinner"
+
+
+def test_each_recipe_shows_time_and_difficulty(cook):
+    reply = text(cook, "recipes")
+    rows = [ln for ln in reply.splitlines() if ln[:1].isdigit()]
+    assert rows and all(re.search(r"\(\d+ min · (easy|medium|hard)\)$", r) for r in rows)
+    assert re.search(r"^🍳 .+ \(\d+ min · \w+\)$", text(cook, "1").splitlines()[0])
+
+
+def test_quick_recipes_fit_the_time(cook):
+    reply = text(cook, "recipes under 20 minutes")
+    assert reply.startswith("🍳 Recipes under 20 min you can make")
+    times = [int(m) for m in re.findall(r"\((\d+) min ·", reply)]
+    assert times and all(t <= 20 for t in times)
+
+
+def test_easy_with_an_ingredient(cook):
+    reply = text(cook, "easy recipes with chicken")
+    assert reply.startswith("🍳 Easy recipes with the chicken")
+    rows = [ln for ln in reply.splitlines() if ln[:1].isdigit()]
+    assert rows and all(r.endswith("easy)") for r in rows)
+
+
+def test_nothing_that_quick_says_so(cook):
+    reply = text(cook, "what can I make in 1 min")
+    assert reply.startswith("🤔 No recipes under 1 min for what's in your fridge right now.")
+    assert "1) " in reply
+
+
+def test_quick_and_expiring_together(cook):
+    reply = text(cook, "quick recipes with what's expiring")
+    assert reply.startswith("⏰ Quick recipes that use what's about to expire")
+    times = [int(m) for m in re.findall(r"\((\d+) min ·", reply)]
+    assert times and all(t <= 20 for t in times)

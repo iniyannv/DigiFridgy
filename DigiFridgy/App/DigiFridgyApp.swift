@@ -19,6 +19,7 @@ struct DigiFridgyApp: App {
             RootView()
                 .environment(appState)
                 .environment(bankStore)
+                .tint(Color("AccentColor"))
                 .task { await appState.bootstrap() }
         }
         .onChange(of: scenePhase) { _, newPhase in

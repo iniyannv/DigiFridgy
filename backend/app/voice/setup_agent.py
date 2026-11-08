@@ -1,6 +1,6 @@
 """Create or update the DigiFridgy ElevenLabs voice agent and its five server tools.
 
-    .venv/bin/python -m app.voice.setup_agent                 # finds a running `cloudflared --url` tunnel
+    .venv/bin/python -m app.voice.setup_agent                 # uses PUBLIC_URL, else a running quick tunnel
     .venv/bin/python -m app.voice.setup_agent https://x.trycloudflare.com
 
 Needs ELEVENLABS_API_KEY and VOICE_TOOL_SECRET in backend/.env. Safe to re-run: tools and the agent
@@ -122,7 +122,7 @@ def main() -> int:
     if not secret:
         print("Set VOICE_TOOL_SECRET in backend/.env.")
         return 1
-    base = (sys.argv[1] if len(sys.argv) > 1 else tunnel_url() or "").rstrip("/")
+    base = (sys.argv[1] if len(sys.argv) > 1 else cfg.get("PUBLIC_URL") or tunnel_url() or "").rstrip("/")
     if not base.startswith("https://"):
         print("No public https address. Start: cloudflared tunnel --config /dev/null --url http://localhost:8001")
         return 1

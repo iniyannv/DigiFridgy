@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(AppState.self) private var app
     @State private var showLinkEmail = false
     @State private var confirmLeave = false
+    @State private var confirmGuestSignOut = false
     @State private var mockMode = UserDefaults.standard.bool(forKey: AppServices.mockDefaultsKey)
     @State private var radius: Double = 10
     @State private var checksResult: String?
@@ -80,7 +81,19 @@ struct SettingsView: View {
                     LabeledContent("Email", value: user.email ?? "—")
                 }
             }
-            Button("Sign out", role: .destructive) { app.signOut() }
+            Button("Sign out", role: .destructive) {
+                // A guest identity lives only on this phone: signing out deletes it for good.
+                if app.user?.isAnonymous ?? false { confirmGuestSignOut = true } else { app.signOut() }
+            }
+            .confirmationDialog("Sign out of this guest account?", isPresented: $confirmGuestSignOut,
+                                titleVisibility: .visible) {
+                if app.services.auth.supportsEmail {
+                    Button("Save account with email first") { showLinkEmail = true }
+                }
+                Button("Sign out anyway", role: .destructive) { app.signOut() }
+            } message: {
+                Text("Guest accounts can't sign back in. You'll lose access to \(app.household?.name ?? "this household") unless someone invites you again.")
+            }
         }
     }
 

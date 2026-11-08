@@ -116,8 +116,11 @@ final class AppState {
         itemsTask = Task { [weak self, repository = services.repository] in
             do {
                 for try await items in repository.itemsStream(householdId: householdId) {
-                    self?.items = items
-                    self?.itemsLoaded = true
+                    guard let self else { return }
+                    let previous = itemsLoaded ? self.items : nil
+                    self.items = items
+                    itemsLoaded = true
+                    await syncReminders(from: previous, to: items)
                 }
             } catch {
                 self?.itemsLoaded = true
@@ -139,6 +142,39 @@ final class AppState {
                 // Shopping list is secondary; the items stream already surfaces permission errors.
             }
         }
+    }
+
+    /// Keeps expiry reminders in step with the fridge, including items that arrive from the bank,
+    /// iMessage or a roommate, and items someone else used up. `previous == nil` is the first load
+    /// for this household: reminders left from earlier sessions or another household are cleared.
+    private func syncReminders(from previous: [FridgeItem]?, to current: [FridgeItem]) async {
+        let notifications = services.notifications
+        guard let previous else {
+            await notifications.removeExpiryReminders(except: Set(current.map(\.id)))
+            current.forEach(notifications.scheduleExpiryReminder)
+            return
+        }
+        let old = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let ids = Set(current.map(\.id))
+        for id in old.keys where !ids.contains(id) {
+            notifications.cancelExpiryReminder(itemId: id)
+        }
+        for item in current where old[item.id] != item {
+            notifications.scheduleExpiryReminder(for: item)
+        }
+    }
+
+    /// Stops the household's live streams and clears what this phone shows and reminds about.
+    private func leaveHouseholdLocally() {
+        itemsTask?.cancel()
+        shoppingTask?.cancel()
+        approvalsTask?.cancel()
+        approvals = []
+        household = nil
+        items = []
+        shoppingList = []
+        itemsLoaded = false
+        Task { await services.notifications.removeExpiryReminders(except: []) }
     }
 
     func signInAnonymously() async {
@@ -169,15 +205,9 @@ final class AppState {
 
     func signOut() {
         do { try services.auth.signOut() } catch { showError(error) }
-        itemsTask?.cancel()
-        shoppingTask?.cancel()
-        approvalsTask?.cancel()
-        approvals = []
+        leaveHouseholdLocally()
         user = nil
         profile = nil
-        household = nil
-        items = []
-        shoppingList = []
         phase = .onboarding
     }
 
@@ -213,12 +243,7 @@ final class AppState {
         do {
             try await services.repository.leaveHousehold(id: hid, uid: user.uid)
             try await updateProfile { $0.householdId = nil }
-            itemsTask?.cancel()
-            shoppingTask?.cancel()
-            approvalsTask?.cancel()
-            approvals = []
-            household = nil
-            items = []
+            leaveHouseholdLocally()
             phase = .householdSetup
         } catch {
             showError(error)

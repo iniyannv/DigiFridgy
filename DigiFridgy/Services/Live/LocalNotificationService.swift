@@ -42,6 +42,14 @@ final class LocalNotificationService: NotificationService {
         center.removePendingNotificationRequests(withIdentifiers: [itemId])
     }
 
+    func removeExpiryReminders(except keep: Set<String>) async {
+        // Expiry reminders are the only calendar-triggered requests; the rest fire after 1 s.
+        let stale = await center.pendingNotificationRequests()
+            .filter { $0.trigger is UNCalendarNotificationTrigger && !keep.contains($0.identifier) }
+            .map(\.identifier)
+        center.removePendingNotificationRequests(withIdentifiers: stale)
+    }
+
     func notifyNow(id: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

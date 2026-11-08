@@ -271,6 +271,7 @@ final class MockNotificationService: NotificationService {
     func requestAuthorization() async -> Bool { true }
     func scheduleExpiryReminder(for item: FridgeItem) { log.append("schedule \(item.id)") }
     func cancelExpiryReminder(itemId: String) { log.append("cancel \(itemId)") }
+    func removeExpiryReminders(except keep: Set<String>) async { log.append("keep \(keep.sorted())") }
     func notifyNow(id: String, title: String, body: String) { log.append("notify \(title)") }
 }
 

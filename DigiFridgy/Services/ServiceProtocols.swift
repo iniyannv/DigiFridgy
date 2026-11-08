@@ -124,6 +124,8 @@ protocol NotificationService: AnyObject, Sendable {
     func requestAuthorization() async -> Bool
     func scheduleExpiryReminder(for item: FridgeItem)
     func cancelExpiryReminder(itemId: String)
+    /// Removes pending expiry reminders for every item not in `keep` (gone from the fridge, or signed out).
+    func removeExpiryReminders(except keep: Set<String>) async
     func notifyNow(id: String, title: String, body: String)
 }
 

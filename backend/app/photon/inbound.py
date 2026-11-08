@@ -11,7 +11,7 @@ import logging
 from datetime import timedelta
 
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ..context import Ctx
 from ..models import PhotonCursor, ProcessedMessage
@@ -23,6 +23,13 @@ log = logging.getLogger("inbound")
 LOOKBACK = timedelta(seconds=10)
 
 
+def assigned_lines(ctx: Ctx) -> set[str]:
+    """Lines Photon assigned at sign-up. Each person may get a different pooled number."""
+    from ..models import Member
+    with Session(ctx.engine) as s:
+        return {x for x in s.exec(select(Member.assigned_line)).all() if x}
+
+
 def passes_guards(ctx: Ctx, m: Inbound) -> bool:
     st = ctx.settings
     if m.status != "received" or m.platform != st.photon_platform:
@@ -31,7 +38,8 @@ def passes_guards(ctx: Ctx, m: Inbound) -> bool:
         return False
     if m.sender_id == m.agent_id:
         return False  # our own message
-    if st.photon_agent_handle and m.agent_handle != st.photon_agent_handle:
+    if st.photon_agent_handle and m.agent_handle != st.photon_agent_handle \
+            and m.agent_handle not in assigned_lines(ctx):
         return False
     if st.photon_platform == "imessage" and m.space_kind != "direct":
         return False

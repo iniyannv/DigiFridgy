@@ -369,9 +369,12 @@ struct BankSettingsSection: View {
                 }
             case .notLinked:
                 Button("Connect a card", systemImage: "building.columns") { showConnect = true }
-            case .offline:
-                Label("Card connection isn't available right now. Try again later.", systemImage: "wifi.exclamationmark")
-                    .font(.footnote).foregroundStyle(.secondary)
+            case .offline(let reason):
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Card connection isn't available right now. Try again later.", systemImage: "wifi.exclamationmark")
+                    Text("\(reason) (\(bank.serverURL))").textSelection(.enabled)
+                }
+                .font(.footnote).foregroundStyle(.secondary)
             case .unknown:
                 HStack { Text("Checking…").foregroundStyle(.secondary); Spacer(); ProgressView() }
             }

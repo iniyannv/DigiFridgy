@@ -1,6 +1,8 @@
 """Command handlers: one incoming iMessage -> state change -> one reply."""
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 from pathlib import Path
@@ -11,7 +13,7 @@ from ..context import Ctx
 from ..fridge import inventory
 from ..fridge.matching import best_catalog_match, category_for, match_items
 from ..households import household_for_new_member, member_by_handle
-from ..models import Household, Item, Member, ProcessedPurchase, ShoppingListItem
+from ..models import Household, Item, Member, PendingAction, ProcessedPurchase, ShoppingListItem
 from ..photon.client import Inbound
 from ..photon.outbound import send_reply
 from . import copy, pending
@@ -21,7 +23,45 @@ log = logging.getLogger("commands")
 RECIPES = json.loads(Path(__file__).with_name("recipes.json").read_text())
 
 
+async def _typing(ctx: Ctx, m: Inbound) -> None:
+    """Shows "…" while we work on a reply. Best effort: some platforms don't support it."""
+    try:
+        await ctx.photon.set_typing(m.space_id, m.agent_id, True)
+    except Exception:
+        pass
+
+
+def _last_action_id(ctx: Ctx, household_id: int) -> int:
+    from sqlmodel import func
+    with Session(ctx.engine) as s:
+        return s.exec(select(func.max(PendingAction.id)).where(PendingAction.household_id == household_id)).first() or 0
+
+
+def _asked(ctx: Ctx, household_id: int, after: int) -> int | None:
+    """The YES/NO question this reply asks, if handling the message opened one."""
+    with Session(ctx.engine) as s:
+        a = pending.latest(s, household_id, pending.YES_NO_KINDS)
+        return a.id if a and a.id > after else None
+
+
+async def _answer_content(ctx: Ctx, hh: Household, m: Inbound, intent: Intent, member: Member | None,
+                          in_group: bool) -> str | None:
+    """Photos and tapbacks first; everything else goes through the text commands."""
+    if m.content_type == "reaction":
+        from . import tapback
+        return await tapback.handle(ctx, hh, m)
+    if m.content_type == "attachment" and m.attachment_id:
+        from . import photo
+        return await photo.handle(ctx, hh, m)
+    return await dispatch(ctx, hh, intent, member=member, in_group=in_group)
+
+
 async def handle_message(ctx: Ctx, m: Inbound) -> None:
+    if m.content_type in ("text", "attachment"):
+        asyncio.create_task(_typing(ctx, m))
+    if m.is_group:
+        await handle_group_message(ctx, m)
+        return
     intent = await route(m.text, ctx.llm) if m.text else Intent(name="not_text")
     with Session(ctx.engine) as s:
         member = member_by_handle(s, m.sender_handle)
@@ -73,12 +113,49 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
             s.commit()
         return
 
-    reply = await dispatch(ctx, hh, intent)
+    before = _last_action_id(ctx, hh.id)
+    reply = await _answer_content(ctx, hh, m, intent, member, in_group=False)
     if reply:
-        await send_reply(ctx, member, m.id, reply)
+        await send_reply(ctx, member, m.id, reply, action_id=_asked(ctx, hh.id, before))
+
+async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
+    """The household group chat. The first member who texts in a new group links it to their household;
+    after that, any member's messages there act on that household and replies go to the whole group.
+    People I don't know are ignored, and money needs a YES in the account holder's own 1:1 chat."""
+    from ..models import HouseholdSpace
+    from ..photon.outbound import reply_in
+    with Session(ctx.engine) as s:
+        member = member_by_handle(s, m.sender_handle)
+        group = s.get(HouseholdSpace, m.space_id)
+        if member is None or member.status == "stopped":
+            return
+        if group is None:
+            group = HouseholdSpace(space_id=m.space_id, household_id=member.household_id,
+                                   agent_user_id=m.agent_id, linked_at=ctx.clock.now())
+            s.add(group)
+            s.commit()
+            hh = s.get(Household, member.household_id)
+            linked_now = True
+        else:
+            if group.household_id != member.household_id:
+                return
+            hh = s.get(Household, group.household_id)
+            linked_now = False
+    if linked_now:
+        await reply_in(ctx, m.space_id, m.agent_id, m.id, copy.group_welcome(hh.name), hh.id)
+        return
+    intent = await route(m.text, ctx.llm) if m.text else Intent(name="not_text")
+    before = _last_action_id(ctx, hh.id)
+    if intent.name == "stop":
+        reply = "To stop my messages, text STOP to me directly. Everyone else in this group keeps getting them."
+    else:
+        reply = await _answer_content(ctx, hh, m, intent, member, in_group=True)
+    if reply:
+        await reply_in(ctx, m.space_id, m.agent_id, m.id, reply, hh.id, action_id=_asked(ctx, hh.id, before))
 
 
-async def dispatch(ctx: Ctx, hh: Household, intent: Intent) -> str:
+async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | None = None,
+                   in_group: bool = False) -> str:
     name = intent.name
     if name == "not_text":
         return copy.NOT_TEXT
@@ -98,7 +175,16 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent) -> str:
     if name == "choice":
         return answer_choice(ctx, hh.id, intent.choice or 0)
     if name in ("yes", "no"):
-        return await answer_yes_no(ctx, hh, name == "yes")
+        return await answer_yes_no(ctx, hh, name == "yes", allow_money=not in_group)
+    if name in ("claim", "claim_last", "ask_claim"):
+        from . import claims
+        if name == "ask_claim":
+            reply = claims.ask(ctx, hh, member, intent.item or "")
+            if not in_group:  # nobody else sees a 1:1 chat, so ask the household
+                from ..photon.outbound import notify_group
+                await notify_group(ctx, hh.id, reply, f"ask:{hh.id}:{intent.item}:{ctx.clock.real_now().timestamp():.0f}")
+            return reply
+        return claims.claim(ctx, hh, member, intent.item if name == "claim" else None)
     if name == "list":
         return list_text(ctx, hh.id)
     if name == "add":
@@ -231,10 +317,23 @@ def update_item(ctx: Ctx, household_id: int, query: str | None, status: str) -> 
 def answer_choice(ctx: Ctx, household_id: int, n: int) -> str:
     now = ctx.clock.now()
     with Session(ctx.engine) as s:
-        a = pending.latest(s, household_id, ("disambiguate",))
+        a = pending.latest(s, household_id, ("disambiguate", "photo_stock"))
         if not a or pending.is_expired(a, now):
             return copy.nothing_pending()
         p = pending.payload(a)
+        if a.kind == "photo_stock":
+            from . import photo
+            new, gone = photo.drop(p, n)
+            if gone is None:
+                return f"Reply a number from 1 to {len(p['items'])} to drop it, or YES to add them."
+            if not new["items"]:
+                pending.set_status(s, a, "declined")
+                s.commit()
+                return f"👍 Dropped {gone}. Nothing left to add."
+            a.payload_json = json.dumps(new)
+            s.add(a)
+            s.commit()
+            return f"👍 Dropped {gone}.\n" + photo.render(new["kind"], new["items"])
         if not 1 <= n <= len(p["options"]):
             return f"Reply a number from 1 to {len(p['options'])}."
         pending.set_status(s, a, "done")
@@ -245,14 +344,24 @@ def answer_choice(ctx: Ctx, household_id: int, n: int) -> str:
         return _apply(ctx, s, household_id, [item], p["status"])
 
 
-async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool) -> str:
+async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, action_id: int | None = None,
+                        allow_money: bool = True) -> str:
+    """Answers the latest open question (or `action_id`). `allow_money=False` (group chats) refuses
+    YES/NO on transfers: those need the account holder in their own chat or the app."""
     from ..nessie.banking import execute_transfer
 
     now = ctx.clock.now()
     with Session(ctx.engine) as s:
-        a = pending.latest(s, hh.id, pending.YES_NO_KINDS)
+        if action_id is not None:
+            a = s.get(PendingAction, action_id)
+            if a is None or a.household_id != hh.id or a.status != "open":
+                return "That question was already answered."
+        else:
+            a = pending.latest(s, hh.id, pending.YES_NO_KINDS)
         if not a:
             return copy.nothing_pending()
+        if a.kind in ("transfer", "settle") and not allow_money:
+            return "💳 Money only moves with a YES from the account holder, in their own chat with me or in the app."
         if pending.is_expired(a, now):
             pending.set_status(s, a, "expired")
             s.commit()
@@ -260,6 +369,18 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool) -> str:
         p = pending.payload(a)
         kind, action_id = a.kind, a.id
 
+        if kind == "photo_stock":
+            from . import photo
+            if not yes:
+                pending.set_status(s, a, "declined")
+                s.commit()
+                return "👍 OK, nothing added."
+            pending.set_status(s, a, "done")
+            fresh = [i for i in photo.stock(ctx, s, hh, p) if i.status == "fresh"]
+            s.commit()
+            names = sorted({i.name for i in fresh})
+            return f"🧊 Added {len(fresh)} item{'s' if len(fresh) != 1 else ''}: {', '.join(names[:6])}" \
+                + (" …" if len(names) > 6 else "") + ". They're in the app too."
         if kind == "settle":
             if not yes:
                 pending.set_status(s, a, "declined")
@@ -337,13 +458,14 @@ def _open_rows(s: Session, household_id: int) -> list[ShoppingListItem]:
 
 def list_text(ctx: Ctx, household_id: int) -> str:
     from .. import money
+    from .claims import claims_for
     with Session(ctx.engine) as s:
         rows = _open_rows(s, household_id)
         active = [r for r in rows if r.confirmed]
         hh = s.get(Household, household_id)
         week_left = money.budget_streak(ctx, s, hh).week_left if hh and hh.checking_account_id else None
         return copy.shopping_list(active, [r for r in rows if not r.confirmed],
-                                  money.list_estimate(s, household_id, active), week_left)
+                                  money.list_estimate(s, household_id, active), week_left, claims_for(s, active))
 
 
 def add_to_list(ctx: Ctx, household_id: int, raw: str, source: str = "manual") -> str:

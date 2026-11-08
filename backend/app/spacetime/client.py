@@ -117,6 +117,7 @@ class _MockHousehold:
     items: dict[str, dict] = field(default_factory=dict)  # id -> {"count", "data"}
     shopping: dict[str, str] = field(default_factory=dict)  # id -> data
     uses: list[dict] = field(default_factory=list)          # my_item_uses rows
+    approvals: dict[str, dict] = field(default_factory=dict)  # my_approvals rows
 
 
 class MockSpacetimeClient:
@@ -194,6 +195,20 @@ class MockSpacetimeClient:
                     hh.items.pop(item_id)
             hh.uses.append({"id": len(hh.uses) + 1, "item_id": item_id, "name": name, "qty": qty,
                             "used_by_hex": me, "used_at_ms": 0})
+        elif reducer == "post_approval":
+            aid, kind, title, detail, money = args
+            hh = self._hh(token)
+            if aid not in hh.approvals or hh.approvals[aid]["status"] == "open":
+                hh.approvals[aid] = {"id": aid, "kind": kind, "title": title, "detail": detail, "money": money,
+                                     "status": "open", "decided_by_hex": "", "created_at_ms": 0}
+        elif reducer == "decide_approval":
+            aid, approve = args
+            row = self._hh(token).approvals.get(aid)
+            if row is None or row["status"] != "open":
+                raise SpacetimeError("530: That question was already answered.")
+            row.update(status="approved" if approve else "declined", decided_by_hex=me)
+        elif reducer == "close_approval":
+            self._hh(token).approvals.pop(args[0], None)
         elif reducer == "save_shopping_item":
             entry_id, data = args
             self._hh(token).shopping[entry_id] = data
@@ -212,6 +227,8 @@ class MockSpacetimeClient:
         if "my_items" in sql:
             return [{"id": k, "count": v["count"], "data": v["data"], "updated_at_ms": 0}
                     for k, v in hh.items.items()]
+        if "my_approvals" in sql:
+            return [dict(a) for a in hh.approvals.values()]
         if "my_item_uses" in sql:
             return [dict(u) for u in hh.uses]
         if "my_shopping" in sql:

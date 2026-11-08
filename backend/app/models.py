@@ -212,6 +212,45 @@ class Settlement(SQLModel, table=True):
     settled_at: NaiveDatetime
 
 
+class HouseholdSpace(SQLModel, table=True):
+    """An iMessage group chat that belongs to a household (the first member to text in it links it)."""
+    __tablename__ = "household_spaces"
+    space_id: str = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    agent_user_id: str
+    linked_at: NaiveDatetime
+
+
+class ListClaim(SQLModel, table=True):
+    """Who said they'd buy a shopping-list item ("I'll grab milk"). `synced_name` is the claim last
+    agreed with the app, the base for merging claims made in either place."""
+    __tablename__ = "list_claims"
+    list_item_id: int = Field(primary_key=True)
+    member_id: Optional[int] = None
+    name: str = ""
+    synced_name: str = ""
+    claimed_at: NaiveDatetime
+
+
+class AgentMessage(SQLModel, table=True):
+    """Messages we sent, by Photon message id, so a tapback on one can answer the question it asked."""
+    __tablename__ = "agent_messages"
+    photon_message_id: str = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    space_id: str = ""
+    sent_at: NaiveDatetime
+    action_id: Optional[int] = None  # the YES/NO question this message asked, when it asked one
+
+
+class ApprovalLink(SQLModel, table=True):
+    """A pending YES/NO question mirrored into SpacetimeDB's `approval` table, so it can be answered
+    in the app as well as over iMessage."""
+    __tablename__ = "approval_links"
+    action_id: int = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    approval_id: str = Field(index=True)
+
+
 class CardPurchaseLine(SQLModel, table=True):
     """One product line of a card purchase. Recent purchases wait here until the
     person adds them (text YES, or pick lines in the app's Add from card)."""

@@ -45,6 +45,10 @@ protocol HouseholdRepository: AnyObject, Sendable {
     /// The signed-in user's identity in the household database (hex), when there is one.
     var identityHex: String? { get }
 
+    /// Questions waiting on a YES for this household (see `Approval`).
+    func approvalsStream(householdId: String) -> AsyncStream<[Approval]>
+    func decideApproval(id: String, approve: Bool) async throws
+
     func shoppingStream(householdId: String) -> AsyncThrowingStream<[ShoppingListItem], any Error>
     func saveShoppingItem(_ item: ShoppingListItem, householdId: String) async throws
     func deleteShoppingItem(id: String, householdId: String) async throws
@@ -63,6 +67,9 @@ extension HouseholdRepository {
     }
 
     var identityHex: String? { nil }
+
+    func approvalsStream(householdId: String) -> AsyncStream<[Approval]> { AsyncStream { $0.finish() } }
+    func decideApproval(id: String, approve: Bool) async throws {}
 }
 
 protocol ProductLookupService: AnyObject, Sendable {

@@ -137,16 +137,20 @@ async def reset(request: Request, wipe_nessie: bool = False):
 class MockText(BaseModel):
     handle: str = "+15555550123"
     text: str
+    group: str | None = None  # name of a simulated group chat, e.g. "flat"
 
 
 @router.post("/mock/text")
 async def mock_text(request: Request, body: MockText):
-    """SIMULATED inbound iMessage (mock Photon only)."""
+    """SIMULATED inbound iMessage (mock Photon only). With `group`, it's said in that group chat."""
     ctx = _ctx(request)
     if not ctx.photon.is_mock:
         raise HTTPException(400, "Photon is live; text the agent from a real phone")
-    ctx.photon.inject(body.handle, body.text)
+    ctx.photon.inject(body.handle, body.text, group=body.group)
     await poll_once(ctx)
+    if body.group:
+        return {"conversation": [{"from": "agent", "text": m["text"], "at": m["createdAt"]}
+                                 for m in ctx.photon.group_conversation(body.group)]}
     return {"conversation": ctx.photon.conversation(body.handle)}
 
 

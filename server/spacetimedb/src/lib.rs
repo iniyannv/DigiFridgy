@@ -97,6 +97,25 @@ pub struct ItemUse {
     pub used_at: Timestamp,
 }
 
+/// A question waiting on a person: "Add these 6 items?", "Move $32 to Grocery Fund?". The iMessage
+/// backend posts one for each YES/NO it asks; any member can answer it in the app, or by text.
+/// `money` ones only count when the account holder answers (the backend checks `decided_by`).
+#[table(accessor = approval)]
+pub struct Approval {
+    #[primary_key]
+    pub id: String,
+    #[index(btree)]
+    pub household_id: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub money: bool,
+    /// open | approved | declined
+    pub status: String,
+    pub decided_by: Option<Identity>,
+    pub created_at: Timestamp,
+}
+
 // MARK: - View rows (plain types so HTTP SQL results are simple JSON)
 
 #[derive(SpacetimeType)]
@@ -145,6 +164,18 @@ pub struct ItemUseRow {
     pub qty: i32,
     pub used_by_hex: String,
     pub used_at_ms: i64,
+}
+
+#[derive(SpacetimeType)]
+pub struct ApprovalRow {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub money: bool,
+    pub status: String,
+    pub decided_by_hex: String,
+    pub created_at_ms: i64,
 }
 
 fn millis(t: Timestamp) -> i64 {
@@ -251,6 +282,26 @@ fn my_item_uses(ctx: &ViewContext) -> Vec<ItemUseRow> {
             qty: u.qty,
             used_by_hex: u.used_by.to_hex().to_string(),
             used_at_ms: millis(u.used_at),
+        })
+        .collect()
+}
+
+#[view(accessor = my_approvals, public)]
+fn my_approvals(ctx: &ViewContext) -> Vec<ApprovalRow> {
+    let Some(hid) = view_household_id(ctx) else { return vec![] };
+    ctx.db
+        .approval()
+        .household_id()
+        .filter(&hid)
+        .map(|a| ApprovalRow {
+            id: a.id,
+            kind: a.kind,
+            title: a.title,
+            detail: a.detail,
+            money: a.money,
+            status: a.status,
+            decided_by_hex: a.decided_by.map(|i| i.to_hex().to_string()).unwrap_or_default(),
+            created_at_ms: millis(a.created_at),
         })
         .collect()
 }
@@ -497,6 +548,68 @@ pub fn delete_item(ctx: &ReducerContext, id: String) -> Result<(), String> {
             return Err("Item belongs to another household.".into());
         }
         ctx.db.fridge_item().id().delete(&id);
+    }
+    Ok(())
+}
+
+// MARK: - Approvals
+
+/// Posts (or re-posts) an open question for the caller's household.
+#[reducer]
+pub fn post_approval(ctx: &ReducerContext, id: String, kind: String, title: String, detail: String, money: bool) -> Result<(), String> {
+    let hid = require_household(ctx)?;
+    check_id(&id)?;
+    check_len("Approval", &detail)?;
+    let row = Approval {
+        id: id.clone(),
+        household_id: hid.clone(),
+        kind: kind.chars().take(40).collect(),
+        title: title.chars().take(200).collect(),
+        detail,
+        money,
+        status: "open".into(),
+        decided_by: None,
+        created_at: ctx.timestamp,
+    };
+    match ctx.db.approval().id().find(&id) {
+        Some(existing) if existing.household_id != hid => Err("Approval belongs to another household.".into()),
+        Some(existing) if existing.status != "open" => Ok(()), // already answered; the poster will close it
+        Some(_) => {
+            ctx.db.approval().id().update(row);
+            Ok(())
+        }
+        None => {
+            ctx.db.approval().insert(row);
+            Ok(())
+        }
+    }
+}
+
+/// A member answers an open question from the app. First answer wins.
+#[reducer]
+pub fn decide_approval(ctx: &ReducerContext, id: String, approve: bool) -> Result<(), String> {
+    let hid = require_household(ctx)?;
+    let a = ctx.db.approval().id().find(&id).ok_or("That question was already answered.")?;
+    if a.household_id != hid {
+        return Err("Approval belongs to another household.".into());
+    }
+    if a.status != "open" {
+        return Err("That question was already answered.".into());
+    }
+    let status = if approve { "approved" } else { "declined" };
+    ctx.db.approval().id().update(Approval { status: status.into(), decided_by: Some(ctx.sender()), ..a });
+    Ok(())
+}
+
+/// The poster removes a question once it's handled (answered here or by text, or expired).
+#[reducer]
+pub fn close_approval(ctx: &ReducerContext, id: String) -> Result<(), String> {
+    let hid = require_household(ctx)?;
+    if let Some(a) = ctx.db.approval().id().find(&id) {
+        if a.household_id != hid {
+            return Err("Approval belongs to another household.".into());
+        }
+        ctx.db.approval().id().delete(&id);
     }
     Ok(())
 }

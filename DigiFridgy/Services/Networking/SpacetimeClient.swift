@@ -137,6 +137,7 @@ extension SpacetimeClient.Row {
     func double(_ key: String) -> Double { (self[key] as? NSNumber)?.doubleValue ?? 0 }
     func date(_ key: String) -> Date { Date(timeIntervalSince1970: Double(int(key)) / 1000) }
     func strings(_ key: String) -> [String] { (self[key] as? [String]) ?? [] }
+    func bool(_ key: String) -> Bool { (self[key] as? Bool) ?? ((self[key] as? NSNumber)?.boolValue ?? false) }
 }
 
 /// Tiny generic-password Keychain wrapper (SpacetimeDB identity token).

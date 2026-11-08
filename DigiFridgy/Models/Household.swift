@@ -69,4 +69,21 @@ nonisolated struct ShoppingListItem: Codable, Identifiable, Hashable, Sendable {
     var barcode: String?
     var addedAt: Date = .now
     var done: Bool = false
+    /// Who said they'd buy it ("I'll grab milk"), from the app or the household's iMessage chat.
+    var claimedBy: String?
+}
+
+/// A question waiting on a person (from the iMessage agent): "Add these 6 items?", "Move $32 to the
+/// Grocery Fund?". Answered here or by text; whichever comes first wins.
+nonisolated struct Approval: Identifiable, Hashable, Sendable {
+    var id: String
+    var kind: String
+    var title: String
+    var detail: String
+    /// Moves money: only the account holder's answer counts (the backend checks).
+    var money: Bool
+    var status: String
+    var createdAt: Date
+
+    var isOpen: Bool { status == "open" }
 }

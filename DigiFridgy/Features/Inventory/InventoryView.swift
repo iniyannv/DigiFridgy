@@ -79,6 +79,10 @@ struct InventoryView: View {
                 }
             }
 
+            if search.isEmpty && !app.approvals.isEmpty {
+                ApprovalsSection()
+            }
+
             let recalled = app.recalledItems
             if !recalled.isEmpty && search.isEmpty {
                 Section {

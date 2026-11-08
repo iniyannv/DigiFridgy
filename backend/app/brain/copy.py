@@ -115,13 +115,14 @@ def bulk_marked(n: int, category: str, status: str = "used") -> str:
 
 
 def shopping_list(active, suggested, estimate: tuple[float, int] | None = None,
-                  week_left: float | None = None) -> str:
+                  week_left: float | None = None, claims: dict | None = None) -> str:
     if not active and not suggested:
         return "🛒 Your list is empty. Reply ADD <item> to add something."
     out = []
     if active:
         out.append("🛒 Shopping list")
-        out.extend(f"• {r.name}" for r in active)
+        claims = claims or {}
+        out.extend(f"• {r.name}" + (f" ({claims[r.id]}'s got it)" if r.id in claims else "") for r in active)
         if estimate and estimate[1]:
             total, known = estimate
             basis = "" if known == len(active) else f" for the {known} you've bought before"
@@ -269,6 +270,12 @@ def dinner(ideas: list[str]) -> str:
     return "🍳 Ideas for tonight:\n" + "\n".join(f"• {i}" for i in ideas)
 
 
+def group_welcome(name: str) -> str:
+    return (f"👋 Hi all! This group is now {name}'s fridge chat. Ask \"who's grabbing milk?\" and "
+            "reply I WILL to take it, send a photo of a receipt to stock the fridge, or ask what's expiring. "
+            "Money questions stay in your own chats with me.")
+
+
 def welcome(name: str, new: bool) -> str:
     if not new:
         return "👋 Welcome back! Reply FRIDGE, EXPIRING, LIST, MONEY, or HELP."
@@ -284,6 +291,8 @@ HELP = ("🧊 DigiFridgey commands\n"
         "LIST · ADD <item> · REMOVE <item> · ADD ALL\n"
         "MONEY · BUDGET <amount> · TRIPS\n"
         "SETTLE (split groceries with roommates)\n"
+        "Who's grabbing milk? · I'll get eggs · I WILL\n"
+        "Send a photo of a receipt or your fridge\n"
         "YES / NO answers my questions\n"
         "APP (invite code for the iPhone app) · LINK <code>\n"
         "PRIVACY · STOP\n"

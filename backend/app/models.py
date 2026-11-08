@@ -29,6 +29,9 @@ class Member(SQLModel, table=True):
     photon_space_id: Optional[str] = None   # the direct conversation
     agent_user_id: Optional[str] = None     # receivedBy.id: who we send as
     status: str = "active"                  # active | stopped
+    display_name: Optional[str] = None
+    assigned_line: Optional[str] = None     # Photon shared line assigned at sign-up (the number they text)
+    welcomed: bool = False
     created_at: NaiveDatetime
 
 

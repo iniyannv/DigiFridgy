@@ -77,7 +77,10 @@ async def process_purchase(ctx: Ctx, hh: Household, p: dict) -> bool:
     with Session(ctx.engine) as s:
         record = ProcessedPurchase(
             nessie_purchase_id=p["_id"], household_id=hh.id, merchant_name=merchant.get("name", ""),
-            amount=float(p.get("amount") or 0), purchase_date=pdate, is_grocery=grocery,
+            # Itemized total keeps the cents Nessie drops; fall back to Nessie's amount.
+            amount=(round(sum(li.total for li in parsed.items), 2) if parsed and parsed.items
+                    else float(p.get("amount") or 0)),
+            purchase_date=pdate, is_grocery=grocery,
             item_count=sum(li.qty for li in parsed.items) if parsed else 0, processed_at=now,
         )
         s.add(record)

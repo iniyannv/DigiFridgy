@@ -45,6 +45,7 @@ struct StoresTabView: View {
             }
             .navigationTitle("Stores")
             .navigationDestination(for: PriceTarget.self) { PriceComparisonView(target: $0) }
+            .productSearch()
         }
     }
 

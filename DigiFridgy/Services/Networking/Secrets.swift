@@ -12,6 +12,9 @@ nonisolated enum Secrets {
     static var walmartKeyVersion: String { value("WalmartKeyVersion").isEmpty ? "1" : value("WalmartKeyVersion") }
     /// Base64url DER of the RSA private key (see Secrets.example.xcconfig).
     static var walmartPrivateKey: String { value("WalmartPrivateKey") }
+    /// Traject Data BlueCart (Walmart search) and RedCircle (Target search): one key each.
+    static var blueCartAPIKey: String { value("BlueCartAPIKey") }
+    static var redCircleAPIKey: String { value("RedCircleAPIKey") }
 
     static var spacetimeHost: String { value("SpacetimeHost") }
     static var spacetimeDatabase: String { value("SpacetimeDatabase") }
@@ -21,6 +24,8 @@ nonisolated enum Secrets {
     static var hasKroger: Bool { !krogerClientID.isEmpty && !krogerClientSecret.isEmpty }
     static var hasCalorieNinjas: Bool { !calorieNinjasKey.isEmpty }
     static var hasWalmart: Bool { !walmartConsumerID.isEmpty && !walmartPrivateKey.isEmpty }
+    static var hasBlueCart: Bool { !blueCartAPIKey.isEmpty }
+    static var hasRedCircle: Bool { !redCircleAPIKey.isEmpty }
 
     private static func value(_ key: String) -> String {
         let raw = (Bundle.main.object(forInfoDictionaryKey: key) as? String) ?? ""

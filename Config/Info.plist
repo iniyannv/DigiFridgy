@@ -45,5 +45,9 @@
 	<string>$(WALMART_KEY_VERSION)</string>
 	<key>WalmartPrivateKey</key>
 	<string>$(WALMART_PRIVATE_KEY)</string>
+	<key>BlueCartAPIKey</key>
+	<string>$(BLUECART_API_KEY)</string>
+	<key>RedCircleAPIKey</key>
+	<string>$(REDCIRCLE_API_KEY)</string>
 </dict>
 </plist>

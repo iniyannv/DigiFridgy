@@ -11,6 +11,9 @@ final class AppServices {
     let recalls: any RecallService
     let kroger: any KrogerService
     let walmart: any WalmartService
+    /// Stores tab product search (Traject Data BlueCart / RedCircle, or samples).
+    let walmartSearch: any ProductSearchService
+    let targetSearch: any ProductSearchService
     let storeSearch: any StoreSearchService
     let location: any LocationService
     let ocr: any ReceiptTextRecognizer
@@ -29,7 +32,9 @@ final class AppServices {
          products: any ProductLookupService, recipes: any RecipeService, recalls: any RecallService,
          kroger: any KrogerService, storeSearch: any StoreSearchService, location: any LocationService,
          ocr: any ReceiptTextRecognizer, normalizer: any ReceiptNormalizer, notifications: any NotificationService,
-         walmart: any WalmartService = MockWalmartService()) {
+         walmart: any WalmartService = MockWalmartService(),
+         walmartSearch: any ProductSearchService = MockProductSearchService(retailer: .walmart),
+         targetSearch: any ProductSearchService = MockProductSearchService(retailer: .target)) {
         self.isMock = isMock
         self.auth = auth
         self.repository = repository
@@ -38,6 +43,8 @@ final class AppServices {
         self.recalls = recalls
         self.kroger = kroger
         self.walmart = walmart
+        self.walmartSearch = walmartSearch
+        self.targetSearch = targetSearch
         self.storeSearch = storeSearch
         self.location = location
         self.ocr = ocr
@@ -107,7 +114,11 @@ final class AppServices {
             ocr: VisionReceiptTextRecognizer(),
             normalizer: SmartReceiptNormalizer(),
             notifications: LocalNotificationService(),
-            walmart: Secrets.hasWalmart ? LiveWalmartService() : MockWalmartService()
+            walmart: Secrets.hasWalmart ? LiveWalmartService() : MockWalmartService(),
+            walmartSearch: Secrets.hasBlueCart ? LiveTrajectSearchService(.blueCart)
+                                               : MockProductSearchService(retailer: .walmart),
+            targetSearch: Secrets.hasRedCircle ? LiveTrajectSearchService(.redCircle)
+                                               : MockProductSearchService(retailer: .target)
         )
     }
 
@@ -139,6 +150,8 @@ final class AppServices {
             ("Edamam recipes", !isMock && Secrets.hasEdamam),
             ("Kroger prices", !isMock && Secrets.hasKroger),
             ("Walmart.com prices", !isMock && Secrets.hasWalmart),
+            ("Walmart search (BlueCart)", walmartSearch.isLive),
+            ("Target search (RedCircle)", targetSearch.isLive),
             // USDA FSIS (meat, poultry, egg products) has no public API an app can call.
             ("Recalls: FDA only (openFDA)", !isMock),
             ("On-device model (receipts)", normalizer.usesOnDeviceModel),

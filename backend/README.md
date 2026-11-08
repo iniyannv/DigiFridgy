@@ -176,6 +176,10 @@ published; USED by text counts either way.
 - **Photos.** Text a photo of a receipt or of your fridge. Gemini (`LLM_API_KEY`) reads it, the items are
   matched to the catalog, and the agent lists them: "Add these 6? Reply YES to add all, or a number to
   drop one." Fridge photos skip what's already tracked. Nothing is added without the YES.
+- **Barcodes (no key needed).** Text a photo of a product's barcode. The server decodes it (zxing-cpp),
+  looks it up on Open Food Facts, and matches it to the catalog: "🏷️ Scanned: 1) 🥛 whole milk (Horizon
+  Organic Whole Milk). Add it?" Things the fridge doesn't track (chips, soda) are named and skipped. If
+  Open Food Facts doesn't know the code and `LLM_API_KEY` is set, Gemini reads the packaging instead.
 - **Answer in either place.** Every YES/NO question (stock a card purchase, add a photo's items, add
   staples, still have it?, budget sweep, settle-up) is also posted to SpacetimeDB's `approval` table. The
   app shows it under *Waiting on a yes* with Yes / Not now. Whichever answer comes first wins; the other

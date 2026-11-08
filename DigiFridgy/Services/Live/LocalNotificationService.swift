@@ -128,7 +128,11 @@ final class LocalNotificationService: NotificationService {
         let now = Date.now
         let (add, remove) = ReminderPlanner.diff(pending: pending, desired: ReminderPlanner.desired(for: items, now: now), now: now)
         let stale = Array(remove) + legacy
-        if !stale.isEmpty { center.removePendingNotificationRequests(withIdentifiers: stale) }
+        if !stale.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: stale)
+            // Alerts already shown for items that are gone, too (used up by a roommate, say).
+            center.removeDeliveredNotifications(withIdentifiers: stale)
+        }
         let calendar = Calendar.current
         for (id, spec) in add {
             let content = UNMutableNotificationContent()

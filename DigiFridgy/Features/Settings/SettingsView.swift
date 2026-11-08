@@ -76,12 +76,23 @@ struct SettingsView: View {
                 }
             }
             Button("Sign out", role: .destructive) {
-                if signOutLosesHousehold { confirmSignOut = true } else { app.signOut() }
+                // A guest identity lives only on this phone: signing out deletes it for good.
+                if app.user?.isAnonymous ?? false { confirmSignOut = true } else { app.signOut() }
             }
-            .confirmationDialog("Sign out?", isPresented: $confirmSignOut, titleVisibility: .visible) {
-                Button("Sign out and lose this fridge", role: .destructive) { app.signOut() }
+            .confirmationDialog("Sign out of this guest account?", isPresented: $confirmSignOut,
+                                titleVisibility: .visible) {
+                if app.services.auth.supportsEmail {
+                    Button("Save account with email first") { showLinkEmail = true }
+                }
+                Button(signOutLosesHousehold ? "Sign out and lose this fridge" : "Sign out anyway", role: .destructive) {
+                    app.signOut()
+                }
             } message: {
-                Text("You're the only member of \(app.household?.name ?? "this household") and signed in as a guest. After signing out, nobody can get back into it.")
+                if signOutLosesHousehold {
+                    Text("You're the only member of \(app.household?.name ?? "this household") and signed in as a guest. After signing out, nobody can get back into it.")
+                } else {
+                    Text("Guest accounts can't sign back in. You'll lose access to \(app.household?.name ?? "this household") unless someone invites you again.")
+                }
             }
         }
     }

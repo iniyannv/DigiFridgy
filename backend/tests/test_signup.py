@@ -40,6 +40,26 @@ def test_signup_is_idempotent_per_phone(ctx):
         assert len(s.exec(select(Household)).all()) == 1
 
 
+def test_same_name_and_last_four_digits_get_separate_households(ctx):
+    """Household names repeat ("Alex's Household (0123)"); each phone still gets its own bank and fridge."""
+    ctx.settings.demo_mode = False
+    a = run(sign_up(ctx, "Alex", None, "(469) 555-0123"))
+    b = run(sign_up(ctx, "Alex", None, "(214) 555-0123"))
+    assert a.household.name == b.household.name
+    assert a.household.id != b.household.id
+    assert a.household.checking_account_id != b.household.checking_account_id
+    # Signing up again still finds your own household.
+    assert run(sign_up(ctx, "Alex", None, "(214) 555-0123")).household.id == b.household.id
+
+
+def test_texting_in_gives_each_number_its_own_household(ctx):
+    from app.households import household_for_new_member
+    ctx.settings.demo_mode = False
+    a = run(household_for_new_member(ctx, "+14695550123"))
+    b = run(household_for_new_member(ctx, "+12145550123"))
+    assert a.id != b.id and a.checking_account_id != b.checking_account_id
+    assert run(household_for_new_member(ctx, "+12145550123")).id == b.id
+
 def test_bad_phone_rejected(ctx):
     with pytest.raises(ValueError):
         run(sign_up(ctx, "Maya", None, "12345"))

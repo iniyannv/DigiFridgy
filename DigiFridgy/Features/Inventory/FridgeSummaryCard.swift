@@ -16,8 +16,8 @@ struct FridgeSummaryCard: View {
         let grades = ["A", "B", "C", "D", "E", "?"]
         var counts = Dictionary(uniqueKeysWithValues: grades.map { ($0, 0) })
         for item in app.items {
-            let g = item.nutriScore?.uppercased() ?? "?"
-            counts[grades.contains(g) ? g : "?", default: 0] += 1
+            let g = app.shelfLife.nutriScore(for: item)?.grade.uppercased() ?? "?"
+            counts[g, default: 0] += 1
         }
         return grades.map { GradeCount(grade: $0, count: counts[$0] ?? 0) }
     }

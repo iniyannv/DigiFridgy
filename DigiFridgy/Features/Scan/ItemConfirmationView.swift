@@ -104,7 +104,7 @@ struct ItemConfirmationView: View {
             }
 
             Section("Details") {
-                NutriScoreBadge(grade: draft.nutriScore)
+                NutriScoreBadge(app.shelfLife.nutriScore(for: draft))
                 AllergenChips(allergens: Allergen.from(tags: draft.allergens), highlighted: app.userAllergens)
             }
 

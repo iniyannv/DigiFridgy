@@ -1,8 +1,8 @@
 """Server tools for the ElevenLabs voice agent (calls arrive via Photon SIP).
 
 Every request needs header `X-Tool-Secret: $VOICE_TOOL_SECRET`. Responses are
-short sentences meant to be spoken (no emoji). Pass ?handle=<caller's number>: in
-ElevenLabs that's `{{system__caller_id}}`, in any format ("+1 (945) 328-8573" works).
+short sentences meant to be spoken (no emoji). The caller's number comes in header
+`X-Caller-Id` (ElevenLabs: the `system__caller_id` variable) or ?handle=, in any format.
 In DEMO_MODE an unknown caller gets the demo household.
 """
 from __future__ import annotations
@@ -37,6 +37,8 @@ router = APIRouter(prefix="/voice/tools", dependencies=[Depends(require_secret)]
 def _household(request: Request, handle: str | None) -> Household:
     from ..signup import normalize_handle
     ctx = request.app.state.ctx
+    # ElevenLabs sends the caller as a header (an empty system__caller_id in a query param breaks its tools).
+    handle = handle or request.headers.get("x-caller-id") or None
     with Session(ctx.engine) as s:
         if handle:
             # Caller ID arrives as "+19453288573", "19453288573" or "(945) 328-8573": same person.
@@ -44,9 +46,14 @@ def _household(request: Request, handle: str | None) -> Household:
             if m:
                 return s.get(Household, m.household_id)
         if ctx.settings.demo_mode:
+            # Browser tests of the agent have no caller ID: use the demo household, else the newest sign-up.
             hh = demo_household(s)
             if hh:
                 return hh
+            from ..models import Member
+            m = s.exec(select(Member).where(Member.status == "active").order_by(Member.created_at.desc())).first()
+            if m:
+                return s.get(Household, m.household_id)
     raise HTTPException(404, "no household for this caller")
 
 
@@ -101,9 +108,9 @@ class AddBody(BaseModel):
 
 
 @router.post("/list/add")
-async def list_add(request: Request, body: AddBody):
+async def list_add(request: Request, body: AddBody, handle: str | None = None):
     ctx = request.app.state.ctx
-    hh = _household(request, body.handle)
+    hh = _household(request, handle or body.handle)
     reply = add_to_list(ctx, hh.id, body.item)
     # Confirm over iMessage too, so the call leaves a written trace.
     await notify_household(ctx, hh.id, f"📞 From your call: {reply}",

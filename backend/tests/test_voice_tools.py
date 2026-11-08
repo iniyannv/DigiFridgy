@@ -70,3 +70,24 @@ def test_recipes_by_voice_for_one_ingredient(caller):
     c = TestClient(create_app(caller))
     r = c.get("/voice/tools/recipes", params={"handle": "+14695550123", "item": "eggs"}, headers=H).json()
     assert r["count"] >= 1 and "You could make" in r["text"]
+
+
+def test_browser_test_without_caller_id_uses_newest_signup_in_demo_mode(caller):
+    ctx = caller
+    ctx.settings.demo_mode = True
+    c = TestClient(create_app(ctx))
+    for missing in (None, "", "null", "{{system__caller_id}}"):
+        params = {} if missing is None else {"handle": missing}
+        assert c.get("/voice/tools/expiring", params=params, headers=H).status_code == 200
+
+
+def test_add_takes_the_caller_from_the_query(caller):
+    c = TestClient(create_app(caller))
+    r = c.post("/voice/tools/list/add", params={"handle": "+14695550123"}, json={"item": "coffee"}, headers=H)
+    assert r.status_code == 200 and "coffee" in r.json()["text"]
+
+
+def test_caller_in_header(caller):
+    c = TestClient(create_app(caller))
+    r = c.get("/voice/tools/check", params={"item": "spinach"}, headers={**H, "X-Caller-Id": "+14695550123"})
+    assert r.status_code == 200 and r.json()["text"].startswith("Yes, you have")

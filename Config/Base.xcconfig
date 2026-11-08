@@ -1,9 +1,0 @@
-// Base build config for the DigiFridgy app target.
-// Empty defaults so the project builds without secrets; Secrets.xcconfig overrides them.
-EDAMAM_APP_ID =
-EDAMAM_APP_KEY =
-KROGER_CLIENT_ID =
-KROGER_CLIENT_SECRET =
-CALORIENINJAS_KEY =
-
-#include? "Secrets.xcconfig"

@@ -1,18 +1,28 @@
 import SwiftUI
 
-/// Post-scan confirmation: name, image, count, estimated expiry (overridable).
+/// Post-scan confirmation: editable name, brand, category, nutrition; count; estimated expiry (overridable).
+/// Edits to a barcode product are remembered and re-applied the next time it's scanned.
 struct ItemConfirmationView: View {
     @Environment(AppState.self) private var app
     @State var draft: FridgeItem
+    var usesSavedCorrections: Bool
     var onSave: (FridgeItem) -> Void
     var onRescan: () -> Void
 
     @State private var showDatePicker = false
+    @State private var editingNutrition = false
 
-    init(draft: FridgeItem, onSave: @escaping (FridgeItem) -> Void, onRescan: @escaping () -> Void) {
+    init(draft: FridgeItem, usesSavedCorrections: Bool = false,
+         onSave: @escaping (FridgeItem) -> Void, onRescan: @escaping () -> Void) {
         _draft = State(initialValue: draft)
+        self.usesSavedCorrections = usesSavedCorrections
         self.onSave = onSave
         self.onRescan = onRescan
+    }
+
+    private var brandBinding: Binding<String> {
+        Binding(get: { draft.brand ?? "" },
+                set: { draft.brand = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 })
     }
 
     var body: some View {
@@ -21,11 +31,33 @@ struct ItemConfirmationView: View {
                 HStack(spacing: 16) {
                     ItemThumbnail(item: draft, size: 72)
                     VStack(alignment: .leading, spacing: 4) {
-                        TextField("Name", text: $draft.name, axis: .vertical)
-                            .font(.headline)
+                        Text(draft.name.isEmpty ? "Unnamed item" : draft.name).font(.headline)
                         if let brand = draft.brand { Text(brand).font(.subheadline).foregroundStyle(.secondary) }
                         if let code = draft.barcode { Text(code).font(.caption.monospaced()).foregroundStyle(.tertiary) }
                     }
+                }
+                if usesSavedCorrections {
+                    Label("Using your saved corrections for this barcode", systemImage: "checkmark.seal.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            Section {
+                LabeledContent("Name") {
+                    TextField("Product name", text: $draft.name, axis: .vertical)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Brand") {
+                    TextField("Optional", text: brandBinding)
+                        .multilineTextAlignment(.trailing)
+                }
+                CategoryPicker(selection: $draft.category)
+            } header: {
+                Text("Product")
+            } footer: {
+                if draft.barcode != nil {
+                    Text("Scanned info not right? Fix it here. Your changes are remembered for this barcode.")
                 }
             }
 
@@ -35,17 +67,6 @@ struct ItemConfirmationView: View {
                         Text("Count")
                         Spacer()
                         Text("\(draft.count)").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                }
-                Picker("Category", selection: $draft.category) {
-                    ForEach(app.shelfLife.categories) { category in
-                        Text("\(CategoryStyle.emoji(for: category.id)) \(category.name)").tag(category.id)
-                    }
-                    Text("🛒 Other").tag(ShelfLifeService.unknownCategoryID)
-                }
-                .onChange(of: draft.category) { _, newCategory in
-                    if draft.expiryIsEstimated {
-                        draft.expiresAt = app.shelfLife.estimatedExpiry(categoryID: newCategory)
                     }
                 }
                 Button {
@@ -64,12 +85,24 @@ struct ItemConfirmationView: View {
                 }
             }
 
+            Section {
+                if editingNutrition {
+                    NutritionEditorRows(nutrition: $draft.nutrition)
+                } else {
+                    if let kcal = draft.nutrition?.kcal {
+                        LabeledContent("Calories", value: "\(Int(kcal.rounded())) per \(draft.nutrition?.servingSize ?? "serving")")
+                    } else {
+                        Text("No nutrition facts found.").foregroundStyle(.secondary)
+                    }
+                    Button("Edit nutrition facts", systemImage: "pencil") { editingNutrition = true }
+                }
+            } header: {
+                Text("Nutrition (per serving)")
+            }
+
             Section("Details") {
                 NutriScoreBadge(grade: draft.nutriScore)
                 AllergenChips(allergens: Allergen.from(tags: draft.allergens), highlighted: app.userAllergens)
-                if let kcal = draft.nutrition?.kcal {
-                    LabeledContent("Calories", value: "\(Int(kcal)) per \(draft.nutrition?.servingSize ?? "serving")")
-                }
             }
 
             Section {
@@ -81,6 +114,14 @@ struct ItemConfirmationView: View {
                 .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button("Scan a different item", action: onRescan)
                     .frame(maxWidth: .infinity)
+            }
+        }
+        .onChange(of: draft.category) { oldCategory, newCategory in
+            if draft.expiryIsEstimated {
+                draft.expiresAt = app.shelfLife.estimatedExpiry(categoryID: newCategory)
+            }
+            if draft.allergens == Allergen.implied(byCategory: oldCategory).map(\.rawValue) {
+                draft.allergens = Allergen.implied(byCategory: newCategory).map(\.rawValue)
             }
         }
         .sheet(isPresented: $showDatePicker) {

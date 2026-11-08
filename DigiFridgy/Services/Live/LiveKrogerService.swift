@@ -5,6 +5,7 @@ final class LiveKrogerService: KrogerService {
     private let api: APIClient
     private var token: (value: String, expiresAt: Date)?
     private var priceCache: [String: KrogerPrice?] = [:]
+    private var catalogCache: [String: Bool] = [:]
 
     init(api: APIClient = .shared) {
         self.api = api
@@ -46,26 +47,44 @@ final class LiveKrogerService: KrogerService {
         .sorted { $0.distanceMiles < $1.distanceMiles }
     }
 
+    /// Live price at one store, or nil when that store doesn't carry the product.
+    /// A known UPC is matched exactly; the name search is only used when Kroger's catalog has no such UPC.
     func price(upc: String?, term: String, locationId: String) async throws -> KrogerPrice? {
         let rawLocation = locationId.replacingOccurrences(of: "kroger-", with: "")
         let cacheKey = "\(upc ?? "")|\(term)|\(rawLocation)"
         if let cached = priceCache[cacheKey] { return cached }
         let token = try await accessToken()
-        var result: KrogerPrice?
-        if let upc, let productId = Self.krogerProductID(fromUPC: upc) {
-            result = try await query([("filter.productId", productId)], location: rawLocation, token: token)
-        }
-        if result == nil {
-            let cleanTerm = String(term.prefix(60))
-            if cleanTerm.count >= 3 {
-                result = try await query([("filter.term", cleanTerm)], location: rawLocation, token: token)
-            }
-        }
+        let result = try await lookUpPrice(upc: upc, term: term, location: rawLocation, token: token)
         priceCache[cacheKey] = result
         return result
     }
 
-    private func query(_ filter: [(String, String)], location: String, token: String) async throws -> KrogerPrice? {
+    private func lookUpPrice(upc: String?, term: String, location: String, token: String) async throws -> KrogerPrice? {
+        if let upc, let productId = Self.krogerProductID(fromUPC: upc) {
+            let atStore = try await query([("filter.productId", productId)], location: location, token: token)
+            if let price = atStore.price { return price }
+            // Listed at this store without a price, or sold elsewhere by Kroger: this store doesn't have it.
+            if atStore.found { return nil }
+            if try await isInCatalog(productId: productId, token: token) { return nil }
+        }
+        for candidate in Self.searchTerms(for: term) {
+            let match = try await query([("filter.term", candidate)], location: location, token: token)
+            if let price = match.price { return price }
+        }
+        return nil
+    }
+
+    /// Whether Kroger sells this product anywhere (product lookup without a store filter).
+    private func isInCatalog(productId: String, token: String) async throws -> Bool {
+        if let known = catalogCache[productId] { return known }
+        let url = api.url("https://api.kroger.com/v1/products", query: [("filter.productId", productId)])
+        let response = try await api.get(ProductsResponse.self, from: url, headers: ["Authorization": "Bearer \(token)"])
+        let found = !response.data.isEmpty
+        catalogCache[productId] = found
+        return found
+    }
+
+    private func query(_ filter: [(String, String)], location: String, token: String) async throws -> (found: Bool, price: KrogerPrice?) {
         let url = api.url("https://api.kroger.com/v1/products",
                           query: filter + [("filter.locationId", location), ("filter.limit", "5")])
         let response = try await api.get(ProductsResponse.self, from: url, headers: ["Authorization": "Bearer \(token)"])
@@ -73,11 +92,30 @@ final class LiveKrogerService: KrogerService {
             for item in product.items ?? [] {
                 if let regular = item.price?.regular, regular > 0 {
                     let promo = item.price?.promo.flatMap { $0 > 0 ? $0 : nil }
-                    return KrogerPrice(regular: regular, promo: promo, description: product.description)
+                    return (true, KrogerPrice(regular: regular, promo: promo, description: product.description))
                 }
             }
         }
-        return nil
+        return (!response.data.isEmpty, nil)
+    }
+
+    /// Kroger's term search matches every word, so long label names ("… 20 fl oz bottle") find nothing.
+    /// Tries the name without sizes, then its first three and two words.
+    nonisolated static func searchTerms(for name: String) -> [String] {
+        let units: Set<String> = ["oz", "fl", "lb", "lbs", "g", "kg", "ml", "l", "ct", "count", "pack", "pk",
+                                  "gal", "gallon", "qt", "pt", "bottle", "bottles", "can", "cans", "jar", "box", "bag"]
+        let words = name
+            .replacingOccurrences(of: "®", with: "").replacingOccurrences(of: "™", with: "")
+            .components(separatedBy: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-'&")).inverted)
+            .filter { word in
+                !word.isEmpty && !units.contains(word.lowercased()) && !word.contains(where: \.isNumber)
+            }
+        var terms: [String] = []
+        for count in [min(words.count, 6), 3, 2] where count > 0 {
+            let term = words.prefix(count).joined(separator: " ")
+            if term.count >= 3, !terms.contains(term) { terms.append(term) }
+        }
+        return terms
     }
 
     /// Kroger product ids are 13 digits: the UPC without its check digit, left-padded with zeros.

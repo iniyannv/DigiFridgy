@@ -8,6 +8,7 @@ struct ItemDetailView: View {
     @State private var showRecall = false
     @State private var showDatePicker = false
     @State private var confirmDelete = false
+    @State private var showEdit = false
 
     var body: some View {
         if let item = app.item(id: itemId) {
@@ -100,6 +101,7 @@ struct ItemDetailView: View {
                 } else {
                     Text("No nutrition data for this item.").foregroundStyle(.secondary)
                 }
+                Button("Edit nutrition facts", systemImage: "pencil") { showEdit = true }
             }
 
             Section("Allergens") {
@@ -135,6 +137,12 @@ struct ItemDetailView: View {
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Edit") { showEdit = true }
+            }
+        }
+        .sheet(isPresented: $showEdit) { ItemEditSheet(item: item) }
         .sheet(isPresented: $showRecall) { RecallDetailSheet(item: item) }
         .sheet(isPresented: $showDatePicker) {
             ExpiryPickerSheet(initial: item.expiresAt) { date in

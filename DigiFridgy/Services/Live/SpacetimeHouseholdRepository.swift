@@ -28,6 +28,11 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     private var fallbackTask: Task<Void, Never>?
     private var latestItems: [FridgeItem]?
     private var latestShopping: [ShoppingListItem]?
+    private var approvalContinuations: [UUID: AsyncStream<[Approval]>.Continuation] = [:]
+    /// Separate from `live`: a module published before approvals existed rejects this query, and that
+    /// mustn't take the fridge's live updates down with it.
+    private var approvalsLive: SpacetimeSubscription?
+    private var latestApprovals: [Approval]?
     /// From `my_profile`; roommates' bank households are matched to app users by it.
     private(set) var identityHex: String?
     /// The published module predates `use_item`: fall back to plain count changes.
@@ -241,6 +246,56 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
                 }
             }
         }
+    }
+
+    // MARK: Approvals
+
+    func approvalsStream(householdId: String) -> AsyncStream<[Approval]> {
+        let (stream, continuation) = AsyncStream<[Approval]>.makeStream()
+        let token = UUID()
+        approvalContinuations[token] = continuation
+        if let latestApprovals { continuation.yield(latestApprovals) }
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in
+                self?.approvalContinuations[token] = nil
+                if self?.approvalContinuations.isEmpty == true {
+                    self?.approvalsLive?.stop()
+                    self?.approvalsLive = nil
+                    self?.latestApprovals = nil
+                }
+            }
+        }
+        if approvalsLive == nil {
+            let subscription = SpacetimeSubscription(client: client, queries: [
+                .init(table: "my_approvals",
+                      columns: ["id", "kind", "title", "detail", "money", "status", "decided_by_hex", "created_at_ms"]),
+            ])
+            subscription.onRawRows = { [weak self] _, columns, raw in
+                guard let self else { return }
+                let rows: [SpacetimeClient.Row] = raw.compactMap { json in
+                    guard let values = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [Any],
+                          values.count >= columns.count else { return nil }
+                    var row: SpacetimeClient.Row = [:]
+                    for (name, value) in zip(columns, values) { row[name] = SpacetimeClient.unwrapOption(value) }
+                    return row
+                }
+                let list = rows.map {
+                    Approval(id: $0.string("id"), kind: $0.string("kind"), title: $0.string("title"),
+                             detail: $0.string("detail"), money: $0.bool("money"), status: $0.string("status"),
+                             createdAt: $0.date("created_at_ms"))
+                }
+                .sorted { ($0.createdAt, $0.id) > ($1.createdAt, $1.id) }
+                self.latestApprovals = list
+                self.approvalContinuations.values.forEach { $0.yield(list) }
+            }
+            approvalsLive = subscription
+            subscription.start()
+        }
+        return stream
+    }
+
+    func decideApproval(id: String, approve: Bool) async throws {
+        try await client.call("decide_approval", [id, approve])
     }
 
     private func stopLiveIfIdle() {

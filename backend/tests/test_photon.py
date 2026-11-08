@@ -36,7 +36,7 @@ def test_polling_dedupes_overlapping_windows(seeded):
     assert len(ctx.photon.outbox) == 1
 
 
-def test_ignores_own_and_group_messages(seeded):
+def test_ignores_own_messages_and_strangers_in_groups(seeded):
     ctx = seeded
     raw = ctx.photon.inject(HANDLE, "hi", created_at=BASE)
     own = _copy.deepcopy(raw)
@@ -51,7 +51,7 @@ def test_ignores_own_and_group_messages(seeded):
     group = _copy.deepcopy(raw)
     group["id"] += "z"
     group["space"]["kind"] = "group"
-    assert run(handle_raw(ctx, group)) is False
+    run(handle_raw(ctx, group))  # groups pass the guards, but this number isn't a member yet
     assert ctx.photon.outbox == []
 
 

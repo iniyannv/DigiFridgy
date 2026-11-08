@@ -32,6 +32,8 @@ final class AppState {
     var household: Household?
     var items: [FridgeItem] = []
     var shoppingList: [ShoppingListItem] = []
+    /// Questions from the iMessage agent waiting on a YES (open ones only).
+    var approvals: [Approval] = []
     var itemsLoaded = false
     var toast: Toast?
     var isRunningChecks = false
@@ -47,6 +49,7 @@ final class AppState {
     private var checksTask: Task<String, Never>?
     /// A live stream ended with an error; resubscribe when the app becomes active again.
     private var streamsEnded = false
+    private var approvalsTask: Task<Void, Never>?
 
     init(services: AppServices) {
         self.services = services
@@ -144,6 +147,12 @@ final class AppState {
                 self?.showError(message: "The fridge stopped updating: \(error.localizedDescription)")
             }
         }
+        approvalsTask?.cancel()
+        approvalsTask = Task { [weak self, repository = services.repository] in
+            for await list in repository.approvalsStream(householdId: householdId) {
+                self?.approvals = list.filter(\.isOpen)
+            }
+        }
         shoppingTask = Task { [weak self, repository = services.repository] in
             do {
                 for try await list in repository.shoppingStream(householdId: householdId) {
@@ -217,6 +226,8 @@ final class AppState {
         itemsTask?.cancel()
         shoppingTask?.cancel()
         clearReminders()
+        approvalsTask?.cancel()
+        approvals = []
         user = nil
         profile = nil
         household = nil
@@ -260,6 +271,8 @@ final class AppState {
             itemsTask?.cancel()
             shoppingTask?.cancel()
             clearReminders()
+            approvalsTask?.cancel()
+            approvals = []
             household = nil
             items = []
             shoppingList = []
@@ -559,6 +572,28 @@ final class AppState {
             do {
                 try await services.repository.saveShoppingItem(entry, householdId: hid)
                 showMessage("Added \(name) to the shopping list")
+            } catch { showError(error) }
+        }
+    }
+
+    /// "I'll get it": the household (and its iMessage group) sees who's buying it. Tap again to let it go.
+    func toggleClaim(_ entry: ShoppingListItem) {
+        guard let hid = householdId else { return }
+        let me = profile?.displayName.trimmingCharacters(in: .whitespaces) ?? ""
+        let name = me.isEmpty || me == "Me" ? "Someone" : me
+        var updated = entry
+        updated.claimedBy = entry.claimedBy == name ? nil : name
+        Task {
+            do { try await services.repository.saveShoppingItem(updated, householdId: hid) } catch { showError(error) }
+        }
+    }
+
+    func answer(_ approval: Approval, yes: Bool) {
+        approvals.removeAll { $0.id == approval.id }
+        Task {
+            do {
+                try await services.repository.decideApproval(id: approval.id, approve: yes)
+                showMessage(yes ? "Done. The answer went to the household chat too." : "OK, not now.")
             } catch { showError(error) }
         }
     }

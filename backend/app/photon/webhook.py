@@ -18,6 +18,35 @@ from .inbound import claim, handle_raw
 
 log = logging.getLogger("webhook")
 router = APIRouter()
+SECRET_KEY = "photon:webhook_secret"
+
+
+def stored_secret(ctx) -> str:
+    from sqlmodel import Session
+
+    from ..models import NessieObject
+    with Session(ctx.engine) as s:
+        row = s.get(NessieObject, SECRET_KEY)
+        return row.nessie_id if row else ""
+
+
+async def register(ctx) -> str:
+    """With PUBLIC_URL set and Photon live: creates the webhook destination (once) and keeps its signing
+    secret, so replies arrive by push instead of the 2 s poll. Polling stays on as the fallback."""
+    from sqlmodel import Session
+
+    from ..models import NessieObject
+    url = f"{ctx.settings.public_url}/photon/webhook"
+    dest, secret = await ctx.photon.ensure_webhook(url)
+    if secret:
+        with Session(ctx.engine) as s:
+            s.merge(NessieObject(key=SECRET_KEY, nessie_id=secret))
+            s.commit()
+        return f"registered {url} ({dest})"
+    if ctx.settings.photon_webhook_secret or stored_secret(ctx):
+        return f"already registered: {url}"
+    return (f"a destination for {url} exists but its signing secret isn't known here; "
+            "set PHOTON_WEBHOOK_SECRET from the Photon dashboard")
 
 
 def find_message(obj, depth: int = 0) -> dict | None:
@@ -42,7 +71,7 @@ def find_message(obj, depth: int = 0) -> dict | None:
 @router.post("/photon/webhook")
 async def photon_webhook(request: Request) -> Response:
     ctx = request.app.state.ctx
-    secret = ctx.settings.photon_webhook_secret
+    secret = ctx.settings.photon_webhook_secret or stored_secret(ctx)
     if not secret:
         return Response(status_code=404)
     body = await request.body()
@@ -51,6 +80,8 @@ async def photon_webhook(request: Request) -> Response:
         event = Webhook(secret).verify(body, headers)
     except WebhookVerificationError:
         return Response(status_code=400)
+    import time
+    ctx.webhook_seen_at = time.monotonic()
     if not claim(ctx, f"wh:{headers['webhook-id']}"):
         return Response(status_code=204)  # duplicate delivery we already accepted
     message = find_message(event)

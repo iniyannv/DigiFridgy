@@ -66,9 +66,15 @@ struct ShoppingListView: View {
                         } label: {
                             Label {
                                 HStack {
-                                    Text(entry.name)
-                                        .strikethrough(entry.done)
-                                        .foregroundStyle(entry.done ? .secondary : .primary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.name)
+                                            .strikethrough(entry.done)
+                                            .foregroundStyle(entry.done ? .secondary : .primary)
+                                        if let who = entry.claimedBy, !entry.done {
+                                            Label("\(who)'s grabbing it", systemImage: "hand.raised.fill")
+                                                .font(.caption).foregroundStyle(.orange)
+                                        }
+                                    }
                                     Spacer()
                                     if !entry.done {
                                         let e = estimate(entry)
@@ -91,9 +97,17 @@ struct ShoppingListView: View {
                         .swipeActions {
                             Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
                         }
+                        .swipeActions(edge: .leading) {
+                            if !entry.done {
+                                Button(entry.claimedBy == nil ? "I'll get it" : "Let go", systemImage: "hand.raised") {
+                                    app.toggleClaim(entry)
+                                }
+                                .tint(.orange)
+                            }
+                        }
                     }
                 } footer: {
-                    Text("Shared with everyone in \(app.household?.name ?? "your household").")
+                    Text("Shared with everyone in \(app.household?.name ?? "your household"), and with the household's iMessage chat. Swipe right to say you'll get something.")
                 }
             }
         }

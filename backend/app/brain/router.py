@@ -8,12 +8,12 @@ from dataclasses import dataclass
 
 INTENTS = ("start", "fridge", "expiring", "used", "tossed", "list", "add", "remove", "add_all", "money",
            "budget", "yes", "no", "choice", "dinner", "help", "stop", "privacy", "check", "app", "link", "settle",
-           "trips", "unknown")
+           "trips", "claim", "claim_last", "ask_claim", "unknown")
 
 # Intents an LLM may return. Confirmations and opt-out are keyword-only.
 # Anything that can lead to money moving (settle offers, the budget that sizes a sweep) is keyword-only too.
 LLM_INTENTS = ("fridge", "expiring", "used", "tossed", "list", "add", "remove", "money",
-               "dinner", "help", "privacy", "check", "trips", "unknown")
+               "dinner", "help", "privacy", "check", "trips", "claim", "ask_claim", "unknown")
 
 
 @dataclass
@@ -52,6 +52,14 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
     ("expiring", r"^(expiring|use soon|what'?s expiring( soon)?|what is expiring( soon)?|anything expiring( soon)?"
                  r"|what'?s (going|about to go) bad|what expires( soon)?)$"),
     ("list", r"^(list|shopping list|grocery list|my list|show (me )?(my )?list|what'?s on (my |the )?list)$"),
+    ("ask_claim", rf"^(?:who(?:'s| is| can| will| wants to)?|can (?:someone|anyone|somebody)|could (?:someone|anyone)"
+                  rf"|is (?:anyone|someone)|anyone(?: able to| wanna| want to)?) (?:grab(?:bing)?|get(?:ting)?"
+                  rf"|pick(?:ing)? up|buy(?:ing)?|going to get|gonna get|gonna grab) {_ITEM}"
+                  rf"(?: on the way home| today| tonight| later)?$"),
+    ("claim", rf"^(?:i'll|i will|ill|i can|i'm|im|i am|i'm gonna|ima) (?:grab|get|pick up|buy|getting|grabbing"
+              rf"|picking up|buying) (?!it$){_ITEM}(?: on the way home| today| tonight| later)?$"),
+    ("claim_last", r"^(i will|i'll|ill|i can|me|on it|i'm on it|im on it|i got it|i'll get it|i'll grab it"
+                   r"|i'll do it|i can get it|i can grab it|i'll pick it up|dibs)$"),
     ("settle", r"^(settle|settle up|split|splits|split (the )?groceries|iou|ious|who owes( who| me| what)?( money)?"
                r"|what do i owe|do i owe (anyone|anybody|someone)( anything)?|roommates?|pay (my )?roommates?)$"),
     ("trips", r"^(trips?|receipts?|purchases|last trip|where did (my|the|our) (grocery )?money go"

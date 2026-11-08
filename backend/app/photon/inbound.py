@@ -1,7 +1,7 @@
 """Inbound iMessages: polling loop (P0) and the shared handler used by the webhook.
 
 Guards (from Photon's quickstart): only received messages, from a human, to
-our agent, in a direct (1:1) conversation, never our own; optional handle
+our agent, in a 1:1 chat or a household group chat, never our own; optional handle
 allowlist. Each message ID is processed once.
 """
 from __future__ import annotations
@@ -41,8 +41,7 @@ def passes_guards(ctx: Ctx, m: Inbound) -> bool:
     if st.photon_agent_handle and m.agent_handle != st.photon_agent_handle \
             and m.agent_handle not in assigned_lines(ctx):
         return False
-    if st.photon_platform == "imessage" and m.space_kind != "direct":
-        return False
+    # Group chats are allowed: the handler only answers members of the household the group belongs to.
     if st.allowed_handles and m.sender_handle not in st.allowed_handles:
         return False
     return True
@@ -117,10 +116,13 @@ async def poll_once(ctx: Ctx) -> int:
 
 
 async def poll_loop(ctx: Ctx) -> None:
+    import time
     while True:
         try:
             await poll_once(ctx)
         except Exception:
             log.exception("photon poll failed")
             await asyncio.sleep(5)
-        await asyncio.sleep(ctx.settings.photon_poll_interval)
+        # Webhooks arriving: polling is only the safety net.
+        live_hooks = ctx.webhook_seen_at is not None and time.monotonic() - ctx.webhook_seen_at < 120
+        await asyncio.sleep(15 if live_hooks else ctx.settings.photon_poll_interval)

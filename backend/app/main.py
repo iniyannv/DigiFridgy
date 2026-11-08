@@ -50,6 +50,12 @@ async def lifespan(app: FastAPI):
             log.info("card review: saved product lines for %d earlier purchase(s)", n)
     except Exception:
         log.exception("card backfill failed")
+    if st.public_url and not ctx.photon.is_mock:
+        try:
+            from .photon.webhook import register
+            log.info("Photon webhook: %s", await register(ctx))
+        except Exception:
+            log.exception("Photon webhook registration failed; polling only")
     if st.run_background:
         tasks = [asyncio.create_task(poll_loop(ctx), name="photon-poll"),
                  asyncio.create_task(sync_loop(ctx), name="nessie-sync"),

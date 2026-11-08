@@ -129,7 +129,7 @@ Monday starts a new budget week, so "this week" spend resets to $0.
 
 `START` (the only way back after STOP) · `APP` (app invite code) · `LINK <code>` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
 `LIST` · `ADD <item>` · `REMOVE <item>` · `ADD ALL` · `MONEY` · `BUDGET 90` · `TRIPS` · `SETTLE` · `YES` / `NO` ·
-`1`/`2` (pick between matches) · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP` (also CANCEL, STOPALL, UNSUBSCRIBE, REVOKE, OPT OUT, "stop texting me")
+`1`/`2` (pick between matches, or drop a photo item) · "who's grabbing milk?" · `I WILL` · "I'll get eggs" · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP` (also CANCEL, STOPALL, UNSUBSCRIBE, REVOKE, OPT OUT, "stop texting me")
 
 With `LLM_API_KEY` set, Gemini classifies messages the keyword rules don't recognize and writes
 dinner ideas. It can never produce YES, NO, STOP or ADD ALL; those must be typed.
@@ -165,6 +165,32 @@ Demo: Settings → Bank demo → *Add a roommate* creates Sam with their own car
 `POST /demo/settle/ask` back the app. App −1 taps only count once the updated module in `server/` is
 published; USED by text counts either way.
 
+## People in the loop (Photon)
+
+- **Household group chat.** Add the agent's number to an iMessage group with your roommates. The first
+  member who texts there links the group to their household; after that it answers any member, and
+  replies go to the whole group. Numbers it doesn't know are ignored. "who's grabbing milk?" puts milk on
+  the list and asks the group; "I will" (or "I'll get eggs") claims it. Claims show in `LIST` and on the
+  app's Shopping list ("Sam's grabbing it"), and swiping right in the app claims too. Money never moves
+  from a group: a YES there to a transfer or settle-up is refused.
+- **Photos.** Text a photo of a receipt or of your fridge. Gemini (`LLM_API_KEY`) reads it, the items are
+  matched to the catalog, and the agent lists them: "Add these 6? Reply YES to add all, or a number to
+  drop one." Fridge photos skip what's already tracked. Nothing is added without the YES.
+- **Answer in either place.** Every YES/NO question (stock a card purchase, add a photo's items, add
+  staples, still have it?, budget sweep, settle-up) is also posted to SpacetimeDB's `approval` table. The
+  app shows it under *Waiting on a yes* with Yes / Not now. Whichever answer comes first wins; the other
+  side updates live, and the household gets a text saying who answered. Money questions only count from
+  the account holder; anyone else's tap is refused and the question reopens.
+- **Tapbacks.** 👍 or ❤️ on the message that asked a question means YES, 👎 means NO. A tapback never
+  moves money ("reply with a typed YES"), and a tapback on an older message is ignored.
+- **Typing.** The agent shows "…" while it works on a reply (`POST /spaces/{id}/typing`).
+- **Webhooks by default.** Set `PUBLIC_URL` (e.g. a Cloudflare tunnel) and the server registers its own
+  Photon webhook destination at startup and keeps the signing secret. While webhooks arrive, polling
+  drops to every 15 s as a safety net.
+
+Demo: `POST /demo/mock/text` takes `"group": "flat"` to speak in a simulated group chat. These need the
+updated module in `server/` published; without it the app simply shows no approvals.
+
 ## Voice (Photon number → ElevenLabs agent)
 
 Follow Photon's voice quickstart (needs a voice-capable number; shared iMessage lines can't take
@@ -181,9 +207,9 @@ In DEMO_MODE the tools use the demo household; otherwise pass `handle=<caller's 
 
 ## Webhook (optional upgrade over polling)
 
-Polling (`list_messages` every 2 s) is the default and needs no public URL. For webhooks, add a
-destination in the Photon dashboard pointing at `https://<public-host>/photon/webhook` and set
-`PHOTON_WEBHOOK_SECRET`. Signatures are verified with `standardwebhooks` against the raw body,
+Polling (`list_messages` every 2 s) is the default and needs no public URL. For webhooks, set
+`PUBLIC_URL` to the server's public address (it registers `/photon/webhook` with Photon at startup), or
+add a destination in the Photon dashboard yourself and set `PHOTON_WEBHOOK_SECRET`. Signatures are verified with `standardwebhooks` against the raw body,
 duplicates are dropped by `webhook-id`, and polling keeps running as the fallback (messages are
 deduped by ID, so nobody gets two replies).
 

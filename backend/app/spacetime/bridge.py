@@ -31,8 +31,8 @@ from ..config import BACKEND_DIR
 from ..context import Ctx
 from ..fridge.shelf_life import find_by_words, lookup
 from ..fridge.matching import best_catalog_match
-from ..models import (Household, Item, ProcessedPurchase, ShoppingListItem, SpaceItemLink, SpaceListLink,
-                      SpaceSyncState, SpacetimeLink, UsageLog)
+from ..models import (ApprovalLink, Household, Item, ListClaim, PendingAction, ProcessedPurchase,
+                      ShoppingListItem, SpaceItemLink, SpaceListLink, SpaceSyncState, SpacetimeLink, UsageLog)
 from ..photon.outbound import notify_household
 from .client import is_unknown_reducer, not_applied
 
@@ -113,6 +113,7 @@ def _app_item_json(ctx: Ctx, external_id: str, unit: Item, count: int, store: st
         "id": external_id, "name": name, "category": category, "count": count,
         "addedAt": _to_ms(ctx, unit.purchased_at), "addedBy": BANK_ADDED_BY,
         "expiresAt": _to_ms(ctx, unit.expires_at), "expiryIsEstimated": True,
+        **({} if unit.source_purchase_id else {"addedBy": "imessage"}),
         # "receipt" so app builds without a "bank" source still decode it; addedBy marks card purchases.
         "source": "receipt", "allergens": _IMPLIED_ALLERGENS.get(category, []),
     }
@@ -503,6 +504,7 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                 s.add(row)
             s.commit()
     stats.update(await sync_list(ctx, hh, link))
+    stats["approvals"] = await sync_approvals(ctx, hh, link)
     return stats
 
 
@@ -587,8 +589,11 @@ def _list_external_id(app_household_id: str, row_id: int) -> str:
     return "list-" + hashlib.sha1(f"{app_household_id}|{row_id}".encode()).hexdigest()[:20]
 
 
-def _app_list_json(ctx: Ctx, ext: str, row: ShoppingListItem, done: bool) -> str:
-    return json.dumps({"id": ext, "name": row.name, "addedAt": _to_ms(ctx, row.added_at), "done": done})
+def _app_list_json(ctx: Ctx, ext: str, row: ShoppingListItem, done: bool, claimed_by: str = "") -> str:
+    data = {"id": ext, "name": row.name, "addedAt": _to_ms(ctx, row.added_at), "done": done}
+    if claimed_by:
+        data["claimedBy"] = claimed_by
+    return json.dumps(data)
 
 
 async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
@@ -605,6 +610,7 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
         log.warning("skipping a malformed app shopping-list row")
     stats = {"list_exported": 0, "list_imported": 0, "list_updates": 0}
     saves: list[tuple[int, str, str, bool]] = []    # (row id, ext, json, done): link is written on success
+    claim_pushes: list[tuple[int, str, str, str]] = []  # (row id, ext, json, claim): synced on success
     deletes: list[tuple[int, str]] = []             # (row id, ext): link is dropped on success
     now = ctx.clock.now()
 
@@ -628,6 +634,17 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
                     stats["list_updates"] += 1
                 s.delete(l)
                 continue
+            # Who's grabbing it: three-way merge against the last agreed claim (app edit wins a tie).
+            app_claim = str(entry.get("claimedBy") or "")[:40]
+            c = s.get(ListClaim, row.id)
+            base, mine = (c.synced_name, c.name) if c else ("", "")
+            if app_claim != base:
+                c = c or ListClaim(list_item_id=row.id, claimed_at=now)
+                c.name = c.synced_name = app_claim
+                c.member_id = None if app_claim != mine else c.member_id
+                s.add(c)
+            elif mine != base:
+                claim_pushes.append((row.id, ext, json.dumps({**entry, "claimedBy": mine or None}), mine))
             app_done = bool(entry.get("done"))
             if app_done != l.done:                  # checked / unchecked in the app (wins a tie)
                 row.done = l.done = app_done
@@ -667,12 +684,16 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
             s.add(row)
             s.flush()
             s.add(SpaceListLink(list_item_id=row.id, household_id=hh.id, external_id=ext, done=done))
+            app_claim = str(entry.get("claimedBy") or "")[:40]
+            if app_claim:
+                s.merge(ListClaim(list_item_id=row.id, name=app_claim, synced_name=app_claim, claimed_at=now))
 
         # Added here (confirmed and still open): goes to the app.
         for row in open_unlinked.values():
             if row.confirmed:
                 ext = _list_external_id(link.app_household_id, row.id)
-                saves.append((row.id, ext, _app_list_json(ctx, ext, row, False), False))
+                c = s.get(ListClaim, row.id)
+                saves.append((row.id, ext, _app_list_json(ctx, ext, row, False, c.name if c else ""), False))
         s.commit()
 
     for row_id, ext in deletes:
@@ -695,9 +716,103 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
             continue
         with Session(ctx.engine) as s:
             s.merge(SpaceListLink(list_item_id=row_id, household_id=hh.id, external_id=ext, done=done))
+            c = s.get(ListClaim, row_id)
+            if c:
+                c.synced_name = c.name
+                s.add(c)
             s.commit()
         stats["list_exported"] += 1
+    for row_id, ext, data, claim in claim_pushes:
+        try:
+            await st.call(link.token, "save_shopping_item", [ext, data])
+        except Exception as e:
+            log.warning("SpacetimeDB claim update (%s) failed: %s", ext, e)
+            continue
+        with Session(ctx.engine) as s:
+            c = s.get(ListClaim, row_id)
+            if c:
+                c.synced_name = claim
+                s.add(c)
+                s.commit()
+        stats["list_updates"] += 1
     return stats
+
+
+# ---------- approvals: answer in iMessage or in the app ----------
+
+_approvals_missing = False  # the published module predates `my_approvals`
+
+
+async def sync_approvals(ctx: Ctx, hh: Household, link: SpacetimeLink) -> int:
+    """Posts each open YES/NO question to SpacetimeDB, acts on answers given in the app, and closes
+    questions that were answered by text or expired."""
+    global _approvals_missing
+    from ..brain import approvals, pending
+    from ..photon.outbound import key_salt, notify_group, notify_household
+    if _approvals_missing:
+        return 0
+    st = ctx.spacetime
+    try:
+        rows = {r["id"]: r for r in await st.query(link.token, "SELECT * FROM my_approvals")}
+    except Exception as e:
+        if "my_approvals" in str(e) or "no such" in str(e).lower():
+            _approvals_missing = True
+            log.info("SpacetimeDB module has no approvals yet; publish server/ to answer questions in the app")
+            return 0
+        raise
+    now = ctx.clock.now()
+    changed = 0
+    with Session(ctx.engine) as s:
+        links = {l.action_id: l.approval_id for l in s.exec(select(ApprovalLink).where(ApprovalLink.household_id == hh.id))}
+        open_ids = {a.id for a in s.exec(select(PendingAction).where(
+            PendingAction.household_id == hh.id, PendingAction.status == "open",
+            PendingAction.kind.in_(pending.YES_NO_KINDS), PendingAction.expires_at > now))}
+
+    async def close(action_id: int, approval_id: str) -> None:
+        try:
+            await st.call(link.token, "close_approval", [approval_id])
+        except Exception as e:
+            log.warning("close_approval(%s) failed: %s", approval_id, e)
+            return
+        with Session(ctx.engine) as s:
+            row = s.get(ApprovalLink, action_id)
+            if row:
+                s.delete(row)
+                s.commit()
+
+    for action_id, approval_id in links.items():
+        row = rows.get(approval_id)
+        if action_id not in open_ids:          # answered by text, or expired
+            await close(action_id, approval_id)
+            changed += 1
+        elif row and row["status"] in ("approved", "declined"):
+            ok, message = await approvals.apply_decision(ctx, hh, action_id, row["status"] == "approved",
+                                                         row.get("decided_by_hex") or "")
+            await close(action_id, approval_id)  # a refused money answer is re-posted below as open
+            if message:
+                key = f"approval:{approval_id}:{row['status']}"
+                await notify_household(ctx, hh.id, message, key)
+                await notify_group(ctx, hh.id, message, key)
+            changed += 1
+            if ok:
+                open_ids.discard(action_id)
+
+    with Session(ctx.engine) as s:
+        posted = {l.action_id for l in s.exec(select(ApprovalLink).where(ApprovalLink.household_id == hh.id))}
+        todo = [s.get(PendingAction, i) for i in open_ids - posted]
+        todo = [(a.id, a.kind, *approvals.describe(s, hh, a)) for a in todo if a and a.status == "open"]
+    for action_id, kind, title, detail, money in todo:
+        approval_id = f"q-{key_salt(ctx)}-{hh.id}-{action_id}"
+        try:
+            await st.call(link.token, "post_approval", [approval_id, kind, title, detail[:2000], money])
+        except Exception as e:
+            log.warning("post_approval(%s) failed: %s", approval_id, e)
+            continue
+        with Session(ctx.engine) as s:
+            s.merge(ApprovalLink(action_id=action_id, household_id=hh.id, approval_id=approval_id))
+            s.commit()
+        changed += 1
+    return changed
 
 
 def _new_unit(ctx: Ctx, household_id: int, template: Item | None, data: dict | None, now: datetime) -> Item:
@@ -804,20 +919,22 @@ async def watch_loop(ctx: Ctx) -> None:
     watchers: dict[int, tuple[str, asyncio.Task]] = {}
     try:
         while True:
+            queries = ["SELECT * FROM my_items", "SELECT * FROM my_shopping"] \
+                + ([] if _approvals_missing else ["SELECT * FROM my_approvals"])
             with Session(ctx.engine) as s:
-                wanted = {l.household_id: l.token for l in s.exec(select(SpacetimeLink))
+                # Key on the queries too: an older module without my_approvals restarts the watch without it.
+                wanted = {l.household_id: f"{l.token}|{len(queries)}" for l in s.exec(select(SpacetimeLink))
                           if l.app_household_id}
-            for hid, (token, task) in list(watchers.items()):
-                if wanted.get(hid) != token or task.done():
+            for hid, (key, task) in list(watchers.items()):
+                if wanted.get(hid) != key or task.done():
                     task.cancel()
                     del watchers[hid]
-            for hid, token in wanted.items():
+            for hid, key in wanted.items():
                 if hid not in watchers:
                     task = asyncio.create_task(
-                        st.watch(token, ["SELECT * FROM my_items", "SELECT * FROM my_shopping"],
-                                 lambda hid=hid: request_sync(ctx, hid)),
+                        st.watch(key.rsplit("|", 1)[0], queries, lambda hid=hid: request_sync(ctx, hid)),
                         name=f"spacetime-watch-{hid}")
-                    watchers[hid] = (token, task)
+                    watchers[hid] = (key, task)
             await asyncio.sleep(5)
     finally:
         for _, task in watchers.values():

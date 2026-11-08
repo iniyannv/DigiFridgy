@@ -79,9 +79,15 @@ the app's fridge become one. Code: [`app/spacetime/`](app/spacetime/bridge.py).
   app household, and `GET /demo/state?app_household_id=…` returns the bank linked to it.
 - Bank items sent to the app carry `price` (per unit) and `store` (the merchant), with
   `addedBy: "bank-purchase"` so the app can mark them.
-- Every 3 s (15 s outside DEMO_MODE) the bridge syncs both ways. Bank purchases appear in the app;
-  items added in the app show up in FRIDGE, EXPIRING and nudges; USED / TOSSED here and −1 / delete in
-  the app update the other side.
+- The bridge syncs both ways as soon as something changes: it holds a WebSocket subscription to each
+  linked household's `my_items` and `my_shopping` views, and every handled iMessage triggers a round too.
+  A timer (3 s in DEMO_MODE, 15 s otherwise) is the fallback. Bank purchases appear in the app; items added
+  in the app show up in FRIDGE, EXPIRING and nudges; USED / TOSSED here and −1 / delete in the app update
+  the other side.
+- **One shopping list.** LIST / ADD / REMOVE / ADD ALL over iMessage and the app's Shopping list are the
+  same entries. Checking an entry off in the app takes it off the list here (unchecking puts it back),
+  REMOVE here deletes it in the app, and the same item added on both sides becomes one entry. Staple
+  suggestions ("ran out of milk, add it?") reach the app only once someone confirms them.
 - The backend keeps one row per unit (needed for waste and sweeps) and the app one row per product with
   a count. Sync is a three-way merge against the last agreed counts, so simultaneous edits on both
   sides add up instead of overwriting each other. After an item exists, only counts flow from here to
@@ -149,7 +155,8 @@ deduped by ID, so nobody gets two replies).
 
 ```
 app/
-  main.py        FastAPI app + 3 loops: Photon poll (2 s), Nessie sync (5 s demo / 60 s), scheduler
+  main.py        FastAPI app + loops: Photon poll (2 s), Nessie sync (5 s demo / 60 s), scheduler,
+                 SpacetimeDB sync + live subscriptions
   config.py      env settings; mocks switch on when a key is missing
   clock.py       the only "now"; demo time-skip is an offset stored in SQLite
   models.py      SQLite tables (households, members, items, list, waste, pending actions, …)

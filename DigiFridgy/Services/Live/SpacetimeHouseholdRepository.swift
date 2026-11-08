@@ -3,8 +3,8 @@ import Foundation
 /// Household data in SpacetimeDB (module: `server/spacetimedb`).
 /// Reads come from per-caller views (`my_profile`, `my_household`, `my_items`, `my_shopping`, `my_prices`),
 /// so a user only ever sees their own household. Writes go through membership-checked reducers.
-/// Live updates: views are polled every couple of seconds while a stream is active, and immediately after
-/// every local write.
+/// Live updates: a WebSocket subscription to the views pushes every change as it commits; while it's down,
+/// the views are polled every couple of seconds and re-read right after each local write.
 final class SpacetimeHouseholdRepository: HouseholdRepository {
     private let client: SpacetimeClient
     private let pollInterval: Duration
@@ -22,6 +22,10 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
 
     private var itemContinuations: [UUID: AsyncThrowingStream<[FridgeItem], any Error>.Continuation] = [:]
     private var shoppingContinuations: [UUID: AsyncThrowingStream<[ShoppingListItem], any Error>.Continuation] = [:]
+    private var live: SpacetimeSubscription?
+    private var fallbackTask: Task<Void, Never>?
+    private var latestItems: [FridgeItem]?
+    private var latestShopping: [ShoppingListItem]?
 
     init(client: SpacetimeClient, pollInterval: Duration = .seconds(2)) {
         self.client = client
@@ -84,7 +88,11 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     // MARK: Items
 
     func fetchItems(householdId: String) async throws -> [FridgeItem] {
-        try await client.query("SELECT * FROM my_items").compactMap { row in
+        decodeItems(try await client.query("SELECT * FROM my_items"))
+    }
+
+    private func decodeItems(_ rows: [SpacetimeClient.Row]) -> [FridgeItem] {
+        rows.compactMap { row in
             guard var item = try? decoder.decode(FridgeItem.self, from: Data(row.string("data").utf8)) else { return nil }
             item.id = row.string("id")
             item.count = row.int("count")
@@ -96,39 +104,104 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
         let (stream, continuation) = AsyncThrowingStream<[FridgeItem], any Error>.makeStream()
         let token = UUID()
         itemContinuations[token] = continuation
-        let task = Task { [weak self] in
-            var last: [FridgeItem]?
-            var failures = 0
-            while !Task.isCancelled, let self {
-                do {
-                    let items = try await self.fetchItems(householdId: householdId).sorted { $0.id < $1.id }
-                    failures = 0
-                    if items != last {
-                        last = items
-                        continuation.yield(items)
-                    }
-                } catch {
-                    failures += 1
-                    // Transient network blips are fine; surface persistent failures (e.g. auth) once.
-                    if failures == 3 || Self.isFatal(error) {
-                        continuation.finish(throwing: error)
-                        return
-                    }
-                }
-                try? await Task.sleep(for: self.pollInterval)
+        if let latestItems { continuation.yield(latestItems) }
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in
+                self?.itemContinuations[token] = nil
+                self?.stopLiveIfIdle()
             }
         }
-        continuation.onTermination = { [weak self] _ in
-            task.cancel()
-            Task { @MainActor in self?.itemContinuations[token] = nil }
-        }
+        startLive()
         return stream
     }
 
-    /// Pushes fresh data to open streams right after a local write.
+    // MARK: Live updates
+    //
+    // One WebSocket subscription to `my_items` + `my_shopping` feeds every open stream: the server pushes
+    // each change (from this phone, another member's phone, or the iMessage backend) as it commits.
+    // While the socket is down, the views are polled over HTTP instead, which also surfaces auth errors.
+
+    private func startLive() {
+        if live == nil {
+            let subscription = SpacetimeSubscription(client: client, queries: [
+                .init(table: "my_items", columns: ["id", "count", "data", "updated_at_ms"]),
+                .init(table: "my_shopping", columns: ["id", "data"]),
+            ])
+            subscription.onRows = { [weak self] table, rows in
+                guard let self else { return }
+                switch table {
+                case "my_items": self.publishItems(self.decodeItems(rows))
+                case "my_shopping": self.publishShopping(self.decodeShopping(rows))
+                default: break
+                }
+            }
+            live = subscription
+            subscription.start()
+        }
+        if fallbackTask == nil {
+            fallbackTask = Task { [weak self] in
+                var failures = 0
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    if self.live?.isConnected != true {
+                        do {
+                            try await self.pollOnce()
+                            failures = 0
+                        } catch {
+                            failures += 1
+                            // Transient network blips are fine; surface persistent failures (e.g. auth) once.
+                            if failures == 3 || Self.isFatal(error) {
+                                self.itemContinuations.values.forEach { $0.finish(throwing: error) }
+                                self.shoppingContinuations.values.forEach { $0.finish(throwing: error) }
+                                self.itemContinuations = [:]
+                                self.shoppingContinuations = [:]
+                                self.stopLiveIfIdle()
+                                return
+                            }
+                        }
+                    }
+                    try? await Task.sleep(for: self.pollInterval)
+                }
+            }
+        }
+    }
+
+    private func stopLiveIfIdle() {
+        guard itemContinuations.isEmpty, shoppingContinuations.isEmpty else { return }
+        live?.stop()
+        live = nil
+        fallbackTask?.cancel()
+        fallbackTask = nil
+        latestItems = nil
+        latestShopping = nil
+    }
+
+    private func pollOnce() async throws {
+        let items = try await fetchItems(householdId: "")
+        publishItems(items)
+        if !shoppingContinuations.isEmpty, let list = try? await fetchShopping() {
+            publishShopping(list)
+        }
+    }
+
+    private func publishItems(_ items: [FridgeItem]) {
+        let sorted = items.sorted { $0.id < $1.id }
+        guard sorted != latestItems else { return }
+        latestItems = sorted
+        itemContinuations.values.forEach { $0.yield(sorted) }
+    }
+
+    private func publishShopping(_ list: [ShoppingListItem]) {
+        guard list != latestShopping else { return }
+        latestShopping = list
+        shoppingContinuations.values.forEach { $0.yield(list) }
+    }
+
+    /// After a local write: the subscription delivers the change itself; without it, re-read right away.
     private func refreshItems() async {
-        guard !itemContinuations.isEmpty, let items = try? await fetchItems(householdId: "") else { return }
-        itemContinuations.values.forEach { $0.yield(items) }
+        guard live?.isConnected != true, !itemContinuations.isEmpty,
+              let items = try? await fetchItems(householdId: "") else { return }
+        publishItems(items)
     }
 
     func saveItem(_ item: FridgeItem, householdId: String) async throws {
@@ -154,38 +227,36 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     // MARK: Shopping list
 
     private func fetchShopping() async throws -> [ShoppingListItem] {
-        try await client.query("SELECT * FROM my_shopping").compactMap { row in
+        decodeShopping(try await client.query("SELECT * FROM my_shopping"))
+    }
+
+    private func decodeShopping(_ rows: [SpacetimeClient.Row]) -> [ShoppingListItem] {
+        rows.compactMap { row in
             guard var entry = try? decoder.decode(ShoppingListItem.self, from: Data(row.string("data").utf8)) else { return nil }
             entry.id = row.string("id")
             return entry
         }
-        .sorted { $0.addedAt > $1.addedAt }
+        .sorted { ($0.addedAt, $0.id) > ($1.addedAt, $1.id) }
     }
 
     func shoppingStream(householdId: String) -> AsyncThrowingStream<[ShoppingListItem], any Error> {
         let (stream, continuation) = AsyncThrowingStream<[ShoppingListItem], any Error>.makeStream()
         let token = UUID()
         shoppingContinuations[token] = continuation
-        let task = Task { [weak self] in
-            var last: [ShoppingListItem]?
-            while !Task.isCancelled, let self {
-                if let list = try? await self.fetchShopping(), list != last {
-                    last = list
-                    continuation.yield(list)
-                }
-                try? await Task.sleep(for: self.pollInterval * 2)
+        if let latestShopping { continuation.yield(latestShopping) }
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in
+                self?.shoppingContinuations[token] = nil
+                self?.stopLiveIfIdle()
             }
         }
-        continuation.onTermination = { [weak self] _ in
-            task.cancel()
-            Task { @MainActor in self?.shoppingContinuations[token] = nil }
-        }
+        startLive()
         return stream
     }
 
     private func refreshShopping() async {
-        guard !shoppingContinuations.isEmpty, let list = try? await fetchShopping() else { return }
-        shoppingContinuations.values.forEach { $0.yield(list) }
+        guard live?.isConnected != true, !shoppingContinuations.isEmpty, let list = try? await fetchShopping() else { return }
+        publishShopping(list)
     }
 
     func saveShoppingItem(_ item: ShoppingListItem, householdId: String) async throws {

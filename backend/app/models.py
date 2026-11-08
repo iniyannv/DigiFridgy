@@ -170,6 +170,16 @@ class SpaceSyncState(SQLModel, table=True):
     app_count: int = 0
 
 
+class SpaceListLink(SQLModel, table=True):
+    """Which app shopping-list entry (ShoppingListItem id in SpacetimeDB) a backend list row is.
+    `done` is the last agreed checked-off state, the base for a two-way merge."""
+    __tablename__ = "spacetime_list_links"
+    list_item_id: int = Field(primary_key=True)
+    household_id: int = Field(index=True)
+    external_id: str = Field(index=True)
+    done: bool = False
+
+
 class CardPurchaseLine(SQLModel, table=True):
     """One product line of a card purchase. Recent purchases wait here until the
     person adds them (text YES, or pick lines in the app's Add from card)."""

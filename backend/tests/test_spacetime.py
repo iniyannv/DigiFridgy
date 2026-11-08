@@ -237,3 +237,97 @@ def test_signup_with_a_bad_app_code_still_signs_up(ctx):
     r = run(sign_up(ctx, "Maya", None, "4695550123", app_invite_code="ZZZZZZ"))
     assert r.app_linked is False and "Couldn't find" in r.app_link_message
     assert r.household.id
+
+
+# ---------- shopping list: one list for iMessage and the app ----------
+
+def app_list(ctx, token) -> dict[str, dict]:
+    return {v["name"].lower(): {**v, "id": k} for k, v in ctx.spacetime.app_shopping(token).items()}
+
+
+def app_add(ctx, token, name: str) -> str:
+    entry_id = str(uuid.uuid4())
+    data = {"id": entry_id, "name": name, "addedAt": 1_790_000_000_000, "done": False}
+    run(ctx.spacetime.call(token, "save_shopping_item", [entry_id, json.dumps(data)]))
+    return entry_id
+
+
+def test_list_added_over_imessage_shows_in_the_app(shared):
+    ctx = shared
+    token = app_user(ctx)
+    text(ctx, "add coffee")
+    run(bridge.sync_now(ctx))
+    entries = app_list(ctx, token)
+    assert list(entries) == ["coffee"] and entries["coffee"]["done"] is False
+
+
+def test_list_added_in_the_app_shows_over_imessage(shared):
+    ctx = shared
+    token = app_user(ctx)
+    run(bridge.sync_now(ctx))
+    app_add(ctx, token, "Sourdough bread")
+    run(bridge.sync_now(ctx))
+    assert "Sourdough bread" in text(ctx, "list")
+    # Adding the same thing over iMessage doesn't make a second entry.
+    assert "already on your list" in text(ctx, "add sourdough bread")
+    run(bridge.sync_now(ctx))
+    assert len(app_list(ctx, token)) == 1
+
+
+def test_list_remove_over_imessage_deletes_in_the_app(shared):
+    ctx = shared
+    token = app_user(ctx)
+    text(ctx, "add coffee")
+    run(bridge.sync_now(ctx))
+    text(ctx, "remove coffee")
+    run(bridge.sync_now(ctx))
+    assert app_list(ctx, token) == {}
+
+
+def test_list_checked_off_or_deleted_in_the_app(shared):
+    ctx = shared
+    token = app_user(ctx)
+    text(ctx, "add coffee")
+    text(ctx, "add bananas")
+    run(bridge.sync_now(ctx))
+    entries = app_list(ctx, token)
+    coffee = entries["coffee"]
+    run(ctx.spacetime.call(token, "save_shopping_item", [coffee["id"], json.dumps({**coffee, "done": True})]))
+    run(ctx.spacetime.call(token, "delete_shopping_item", [entries["bananas"]["id"]]))
+    run(bridge.sync_now(ctx))
+    reply = text(ctx, "list")
+    assert "coffee" not in reply.lower() and "banana" not in reply.lower()
+    # Unchecking it in the app puts it back on the list.
+    run(ctx.spacetime.call(token, "save_shopping_item", [coffee["id"], json.dumps({**coffee, "done": False})]))
+    run(bridge.sync_now(ctx))
+    assert "coffee" in text(ctx, "list").lower()
+    assert set(app_list(ctx, token)) == {"coffee"}
+
+
+def test_list_staple_suggestions_wait_for_confirmation(shared):
+    ctx = shared
+    token = app_user(ctx)
+    run(bridge.sync_now(ctx))
+    with Session(ctx.engine) as s:
+        from app.models import ShoppingListItem
+        s.add(ShoppingListItem(household_id=household(ctx).id, name="Whole milk", source="auto",
+                               confirmed=False, added_at=ctx.clock.now()))
+        s.commit()
+    run(bridge.sync_now(ctx))
+    assert app_list(ctx, token) == {}
+    text(ctx, "add all")
+    run(bridge.sync_now(ctx))
+    assert list(app_list(ctx, token)) == ["whole milk"]
+
+
+def test_list_sync_survives_an_outage(shared):
+    ctx = shared
+    token = app_user(ctx)
+    run(bridge.sync_now(ctx))
+    text(ctx, "add coffee")
+    ctx.spacetime.fail_reducers = True
+    run(bridge.sync_now(ctx))
+    ctx.spacetime.fail_reducers = False
+    assert "coffee" in text(ctx, "list").lower()   # not mistaken for "deleted in the app"
+    run(bridge.sync_now(ctx))
+    assert list(app_list(ctx, token)) == ["coffee"]

@@ -72,6 +72,8 @@ async def handle_raw(ctx: Ctx, raw: dict) -> bool:
         await handle_message(ctx, m)
     except Exception:
         log.exception("handler failed for message %s", m.id)
+    from ..spacetime.bridge import request_sync
+    request_sync(ctx)  # USED / ADD / … show up in the app right away
     return True
 
 

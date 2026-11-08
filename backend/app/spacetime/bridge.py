@@ -28,7 +28,9 @@ from sqlmodel import Session, select
 from ..config import BACKEND_DIR
 from ..context import Ctx
 from ..fridge.shelf_life import find_by_words, lookup
-from ..models import Household, Item, ProcessedPurchase, SpaceItemLink, SpaceSyncState, SpacetimeLink
+from ..fridge.matching import best_catalog_match
+from ..models import (Household, Item, ProcessedPurchase, ShoppingListItem, SpaceItemLink, SpaceListLink,
+                      SpaceSyncState, SpacetimeLink)
 from ..photon.outbound import notify_household
 
 log = logging.getLogger("spacetime")
@@ -213,6 +215,8 @@ async def join_app_household(ctx: Ctx, hh: Household, code: str) -> tuple[bool, 
                 s.delete(row)
             for row in s.exec(select(SpaceItemLink).where(SpaceItemLink.household_id == hh.id)):
                 s.delete(row)
+            for row in s.exec(select(SpaceListLink).where(SpaceListLink.household_id == hh.id)):
+                s.delete(row)
             s.commit()
         await _refresh_household(ctx, link)
         await sync_household(ctx, hh)
@@ -335,6 +339,125 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                 row.app_count = target
                 s.add(row)
             s.commit()
+    stats.update(await sync_list(ctx, hh, link))
+    return stats
+
+
+# ---------- shopping list ----------
+#
+# One list for the household: iMessage (ADD / REMOVE / ADD ALL / staple suggestions) and the app's
+# Shopping list are the same entries. Each backend row maps to one app entry through `SpaceListLink`,
+# whose `done` is the last agreed checked-off state. Unconfirmed staple suggestions stay here until
+# someone confirms them (ADD ALL / YES). Checking an entry off in the app marks it done here; REMOVE
+# over iMessage deletes it from the app; deleting it in the app removes it here.
+
+def _list_external_id(app_household_id: str, row_id: int) -> str:
+    return "list-" + hashlib.sha1(f"{app_household_id}|{row_id}".encode()).hexdigest()[:20]
+
+
+def _app_list_json(ctx: Ctx, ext: str, row: ShoppingListItem, done: bool) -> str:
+    return json.dumps({"id": ext, "name": row.name, "addedAt": _to_ms(ctx, row.added_at), "done": done})
+
+
+async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
+    st = ctx.spacetime
+    app: dict[str, dict] = {}
+    for r in await st.query(link.token, "SELECT * FROM my_shopping"):
+        try:
+            app[r["id"]] = json.loads(r["data"])
+        except (TypeError, ValueError):
+            continue
+    stats = {"list_exported": 0, "list_imported": 0, "list_updates": 0}
+    saves: list[tuple[int, str, str, bool]] = []    # (row id, ext, json, done): link is written on success
+    deletes: list[tuple[int, str]] = []             # (row id, ext): link is dropped on success
+    now = ctx.clock.now()
+
+    with Session(ctx.engine) as s:
+        links = {l.external_id: l for l in s.exec(select(SpaceListLink).where(SpaceListLink.household_id == hh.id))}
+        linked_rows = {l.list_item_id for l in links.values()}
+
+        for ext, l in links.items():
+            row = s.get(ShoppingListItem, l.list_item_id)
+            entry = app.get(ext)
+            if row is None:
+                if entry is not None:
+                    deletes.append((l.list_item_id, ext))
+                else:
+                    s.delete(l)
+                continue
+            if entry is None:                       # deleted in the app
+                if not row.done:
+                    row.done = True
+                    s.add(row)
+                    stats["list_updates"] += 1
+                s.delete(l)
+                continue
+            app_done = bool(entry.get("done"))
+            if app_done != l.done:                  # checked / unchecked in the app (wins a tie)
+                row.done = l.done = app_done
+                s.add(row)
+                s.add(l)
+                stats["list_updates"] += 1
+            elif row.done != l.done:                # changed here (REMOVE over iMessage)
+                deletes.append((row.id, ext))
+                stats["list_updates"] += 1
+
+        # Added in the app: becomes a row here, or pairs with the same open item added over iMessage.
+        open_unlinked = {}
+        for r in s.exec(select(ShoppingListItem).where(ShoppingListItem.household_id == hh.id,
+                                                       ShoppingListItem.done == False)  # noqa: E712
+                        .order_by(ShoppingListItem.added_at)):
+            if r.id not in linked_rows:
+                open_unlinked.setdefault(r.name.lower(), r)
+        for ext, entry in app.items():
+            if ext in links:
+                continue
+            name = str(entry.get("name") or "").strip()[:60]
+            if not name:
+                continue
+            done = bool(entry.get("done"))
+            row = open_unlinked.pop(name.lower(), None)
+            if row is None:
+                info = best_catalog_match(name)
+                added = _from_ms(ctx, entry["addedAt"]) if entry.get("addedAt") else now
+                row = ShoppingListItem(household_id=hh.id, name=name, sku=info.sku if info else None,
+                                       source="app", confirmed=True, added_at=added, done=done)
+                stats["list_imported"] += 1
+            else:
+                row.confirmed = True
+                row.done = done
+            s.add(row)
+            s.flush()
+            s.add(SpaceListLink(list_item_id=row.id, household_id=hh.id, external_id=ext, done=done))
+
+        # Added here (confirmed and still open): goes to the app.
+        for row in open_unlinked.values():
+            if row.confirmed:
+                ext = _list_external_id(link.app_household_id, row.id)
+                saves.append((row.id, ext, _app_list_json(ctx, ext, row, False), False))
+        s.commit()
+
+    for row_id, ext in deletes:
+        try:
+            await st.call(link.token, "delete_shopping_item", [ext])
+        except Exception as e:
+            log.warning("SpacetimeDB delete_shopping_item(%s) failed: %s", ext, e)
+            continue
+        with Session(ctx.engine) as s:
+            l = s.exec(select(SpaceListLink).where(SpaceListLink.external_id == ext)).first()
+            if l is not None:
+                s.delete(l)
+                s.commit()
+    for row_id, ext, data, done in saves:
+        try:
+            await st.call(link.token, "save_shopping_item", [ext, data])
+        except Exception as e:
+            log.warning("SpacetimeDB save_shopping_item(%s) failed: %s", ext, e)
+            continue
+        with Session(ctx.engine) as s:
+            s.merge(SpaceListLink(list_item_id=row_id, household_id=hh.id, external_id=ext, done=done))
+            s.commit()
+        stats["list_exported"] += 1
     return stats
 
 
@@ -390,10 +513,53 @@ async def sync_now(ctx: Ctx) -> dict:
         return await sync_all(ctx)
 
 
+def request_sync(ctx: Ctx) -> None:
+    """Runs a sync round now instead of at the next interval (after an iMessage command, or when the
+    app changed the fridge or the list)."""
+    if ctx.spacetime_wake is not None:
+        ctx.spacetime_wake.set()
+
+
 async def sync_loop(ctx: Ctx) -> None:
+    """Syncs whenever something changes (see `request_sync` and `watch_loop`), and on a timer as a fallback."""
+    wake = ctx.spacetime_wake = asyncio.Event()
     while True:
         try:
             await sync_now(ctx)
         except Exception:
             log.exception("SpacetimeDB sync loop error")
-        await asyncio.sleep(ctx.settings.spacetime_interval)
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=ctx.settings.spacetime_interval)
+            await asyncio.sleep(0.15)  # one round for a burst of changes
+        except asyncio.TimeoutError:
+            pass
+        wake.clear()
+
+
+async def watch_loop(ctx: Ctx) -> None:
+    """One live SpacetimeDB subscription per linked household: an app change wakes the sync loop
+    within a fraction of a second instead of waiting for the next poll."""
+    st = ctx.spacetime
+    if st is None or st.is_mock:
+        return
+    watchers: dict[int, tuple[str, asyncio.Task]] = {}
+    try:
+        while True:
+            with Session(ctx.engine) as s:
+                wanted = {l.household_id: l.token for l in s.exec(select(SpacetimeLink))
+                          if l.app_household_id}
+            for hid, (token, task) in list(watchers.items()):
+                if wanted.get(hid) != token or task.done():
+                    task.cancel()
+                    del watchers[hid]
+            for hid, token in wanted.items():
+                if hid not in watchers:
+                    task = asyncio.create_task(
+                        st.watch(token, ["SELECT * FROM my_items", "SELECT * FROM my_shopping"],
+                                 lambda: request_sync(ctx)),
+                        name=f"spacetime-watch-{hid}")
+                    watchers[hid] = (token, task)
+            await asyncio.sleep(5)
+    finally:
+        for _, task in watchers.values():
+            task.cancel()

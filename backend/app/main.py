@@ -20,6 +20,7 @@ from .photon.webhook import router as webhook_router
 from .scheduler.jobs import scheduler_loop
 from .signup import router as signup_router
 from .spacetime.bridge import sync_loop as spacetime_loop
+from .spacetime.bridge import watch_loop as spacetime_watch
 from .voice.tools import router as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(scheduler_loop(ctx), name="scheduler")]
         if ctx.spacetime is not None:
             tasks.append(asyncio.create_task(spacetime_loop(ctx), name="spacetime-sync"))
+            tasks.append(asyncio.create_task(spacetime_watch(ctx), name="spacetime-watch"))
     yield
     for t in tasks:
         t.cancel()

@@ -48,11 +48,14 @@ The server module lives in [`server/spacetimedb/src/lib.rs`](server/spacetimedb/
 - **Writes:** reducers check membership against `ctx.sender()`: `save_profile`, `create_household`,
   `join_household` (6-char invite code), `leave_household`, `upsert_item`, `upsert_items` (receipt batch),
   `increment_count`, `delete_item`, `save_shopping_item`, `delete_shopping_item`, `save_price`.
-- **Client:** there's no official Swift SDK, so the app uses a small HTTP client
-  ([`SpacetimeClient.swift`](DigiFridgy/Services/Networking/SpacetimeClient.swift)). Reducers go through
-  `POST /v1/database/:db/call/:reducer` and views through `POST /v1/database/:db/sql`. Shared-fridge
-  updates arrive by polling the views every 2 s while the app is open, plus an immediate refresh after
-  each local write.
+- **Client:** there's no official Swift SDK, so the app has a small client of its own, with no
+  dependencies. Reducers go through `POST /v1/database/:db/call/:reducer`
+  ([`SpacetimeClient.swift`](DigiFridgy/Services/Networking/SpacetimeClient.swift)). Live data comes from a
+  WebSocket subscription (`/v1/database/:db/subscribe`, subprotocol `v1.json.spacetimedb`) to `my_items`
+  and `my_shopping` ([`SpacetimeSubscription.swift`](DigiFridgy/Services/Networking/SpacetimeSubscription.swift)):
+  the server sends the initial rows, then the inserts and deletes of every transaction that touches them,
+  from any phone or the iMessage backend (about 50 ms end to end on Maincloud). While the socket is down,
+  the app polls the views over `POST /v1/database/:db/sql` every 2 s and reconnects with backoff.
 
 Publish changes to the module:
 
@@ -103,7 +106,7 @@ Settings → **Services** shows which integrations are live vs mock.
 ## Demo script (~3 min)
 
 1. **Scan** milk + yogurt barcodes (simulator: tap a test barcode in the scan sheet) → items appear
-   with an **Est.** expiry; a second device that joined with the invite code updates within ~2 s.
+   with an **Est.** expiry; a second device that joined with the invite code updates instantly.
 2. **Scan a receipt** (+ → Scan receipt → camera / photo / sample receipt) → review → 6+ items added.
 3. Open the **yogurt** → FDA-style nutrition label, Nutri-Score, milk allergen warning
    (turn on *Milk* in Settings → My allergens).
@@ -140,8 +143,8 @@ server/       SpacetimeDB module (Rust): tables, per-caller views, membership-ch
 ```
 
 Data flow: views read `AppState` from the environment; `AppState` calls services and consumes the
-repository's `AsyncThrowingStream` of items, which polls the SpacetimeDB `my_items` view to stay live
-across household members.
+repository's `AsyncThrowingStream`s of items and shopping entries, fed by one SpacetimeDB subscription so
+every household member (and the iMessage backend) sees each change as it commits.
 
 Expiry is **estimated** from category shelf life (approximating USDA FoodKeeper fridge times) and
 always labeled "Est." until the user sets the printed date.

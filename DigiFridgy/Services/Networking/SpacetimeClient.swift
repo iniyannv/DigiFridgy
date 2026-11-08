@@ -122,7 +122,7 @@ final class SpacetimeClient {
     }
 
     /// SATS-JSON encodes Option as {"some": v} / {"none": []}.
-    private static func unwrapOption(_ value: Any) -> Any {
+    static func unwrapOption(_ value: Any) -> Any {
         if let dict = value as? [String: Any], dict.count == 1 {
             if let some = dict["some"] { return some }
             if dict["none"] != nil { return NSNull() }

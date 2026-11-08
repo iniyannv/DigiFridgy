@@ -4,16 +4,26 @@ Same API the iOS app uses:
 - `POST /v1/identity` → a new identity + token (one per backend household)
 - `POST /v1/database/:db/call/:reducer` with a JSON array of args, `Authorization: Bearer <token>`
 - `POST /v1/database/:db/sql` with one SQL statement, against the per-caller views (`my_items`, …)
+- `GET /v1/database/:db/subscribe` (WebSocket, subprotocol `v1.json.spacetimedb`): a live subscription
+  to the views, so the bridge syncs as soon as someone changes the fridge in the app
 
 Reducer errors (`Err(String)`) come back as HTTP 530 with the message as the body.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import ssl
 import uuid
 from dataclasses import dataclass, field
+from typing import Awaitable, Callable
 
+import certifi
 import httpx
+import websockets
+
+log = logging.getLogger("spacetime")
 
 
 class SpacetimeError(Exception):
@@ -52,6 +62,36 @@ class SpacetimeClient:
         names = [(e.get("name") or {}).get("some", f"col{i}") for i, e in enumerate(first["schema"]["elements"])]
         return [dict(zip(names, (_unwrap(v) for v in row))) for row in first["rows"]]
 
+    async def watch(self, token: str, queries: list[str], on_change: Callable[[], Awaitable[None] | None],
+                    stop: asyncio.Event | None = None) -> None:
+        """Subscribes to `queries` and calls `on_change` after the initial rows and after every
+        transaction that touches them. Reconnects with backoff until cancelled (or `stop` is set)."""
+        ws_url = self.base.replace("http", "ws", 1) + f"/v1/database/{self.database}/subscribe"
+        tls = ssl.create_default_context(cafile=certifi.where()) if ws_url.startswith("wss") else None
+        backoff = 1.0
+        while stop is None or not stop.is_set():
+            try:
+                async with websockets.connect(ws_url, subprotocols=["v1.json.spacetimedb"], ssl=tls,
+                                              additional_headers={"Authorization": f"Bearer {token}"},
+                                              max_size=None, open_timeout=15) as ws:
+                    await ws.send(json.dumps({"SubscribeMulti": {"query_strings": queries, "request_id": 1,
+                                                                 "query_id": {"id": 1}}}))
+                    async for raw in ws:
+                        msg = json.loads(raw)
+                        if "SubscriptionError" in msg:
+                            raise SpacetimeError(str(msg["SubscriptionError"])[:200])
+                        if msg.keys() & {"SubscribeMultiApplied", "TransactionUpdateLight", "TransactionUpdate"}:
+                            backoff = 1.0
+                            result = on_change()
+                            if asyncio.iscoroutine(result):
+                                await result
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # network blip, auth, server restart: keep trying
+                log.info("SpacetimeDB subscription dropped (%s), retrying in %.0fs", str(e)[:120], backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
     @staticmethod
     def _check(r: httpx.Response) -> None:
         if r.status_code >= 300:
@@ -75,6 +115,7 @@ class _MockHousehold:
     invite_code: str
     members: set[str] = field(default_factory=set)
     items: dict[str, dict] = field(default_factory=dict)  # id -> {"count", "data"}
+    shopping: dict[str, str] = field(default_factory=dict)  # id -> data
 
 
 class MockSpacetimeClient:
@@ -139,6 +180,11 @@ class MockSpacetimeClient:
             item["count"] = max(0, item["count"] + delta)
         elif reducer == "delete_item":
             self._hh(token).items.pop(args[0], None)
+        elif reducer == "save_shopping_item":
+            entry_id, data = args
+            self._hh(token).shopping[entry_id] = data
+        elif reducer == "delete_shopping_item":
+            self._hh(token).shopping.pop(args[0], None)
         else:
             raise SpacetimeError(f"mock: unsupported reducer {reducer}")
 
@@ -152,12 +198,17 @@ class MockSpacetimeClient:
         if "my_items" in sql:
             return [{"id": k, "count": v["count"], "data": v["data"], "updated_at_ms": 0}
                     for k, v in hh.items.items()]
+        if "my_shopping" in sql:
+            return [{"id": k, "data": v} for k, v in hh.shopping.items()]
         if "my_household" in sql:
             return [{"id": hh.id, "name": hh.name, "invite_code": hh.invite_code, "created_at_ms": 0,
                      "members": sorted(hh.members)}]
         raise SpacetimeError(f"mock: unsupported query {sql}")
 
-    # Test helper: what the app sees.
+    # Test helpers: what the app sees.
+    def app_shopping(self, token: str) -> dict[str, dict]:
+        return {k: json.loads(v) for k, v in self._hh(token).shopping.items()}
+
     def app_items(self, token: str) -> dict[str, dict]:
         # The row's count column is authoritative (the JSON copy can be stale), as in the app.
         return {k: {**json.loads(v["data"]), "count": v["count"]} for k, v in self._hh(token).items.items()}

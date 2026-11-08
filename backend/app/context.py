@@ -18,6 +18,7 @@ class Ctx:
     photon: Any   # PhotonClient | MockPhotonClient
     llm: Any = None  # GeminiLLM | None
     spacetime: Any = None  # SpacetimeClient | MockSpacetimeClient | None (None = no app sync)
+    spacetime_wake: Any = None  # asyncio.Event set when either side changed (see spacetime.bridge)
     merchant_cache: dict = field(default_factory=dict)
     _salt: str | None = None
 

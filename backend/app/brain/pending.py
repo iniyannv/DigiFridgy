@@ -1,0 +1,80 @@
+"""Pending actions: anything waiting on a human answer (YES/NO, 1/2).
+
+Money only moves through `claim_open`, which flips one open, unexpired action
+to `executing` in a single conditional UPDATE, so it can run at most once.
+"""
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+
+from sqlalchemy import update
+from sqlmodel import Session, select
+
+from ..models import PendingAction
+
+TTL_MINUTES = 30
+YES_NO_KINDS = ("transfer", "bulk_used", "nudge", "add_suggestions")
+
+
+def create(s: Session, household_id: int, kind: str, payload: dict, now, minutes: int = TTL_MINUTES) -> PendingAction:
+    # A new question replaces any older open question, so YES always answers the latest one.
+    kinds = YES_NO_KINDS if kind in YES_NO_KINDS else (kind,)
+    for old in s.exec(select(PendingAction).where(PendingAction.household_id == household_id,
+                                                  PendingAction.status == "open",
+                                                  PendingAction.kind.in_(kinds))):
+        old.status = "superseded"
+        s.add(old)
+    a = PendingAction(household_id=household_id, kind=kind, payload_json=json.dumps(payload),
+                      created_at=now, expires_at=now + timedelta(minutes=minutes))
+    s.add(a)
+    s.flush()
+    return a
+
+
+def latest(s: Session, household_id: int, kinds: tuple[str, ...]) -> PendingAction | None:
+    """Most recent open action of these kinds, expired or not (caller checks)."""
+    return s.exec(select(PendingAction).where(PendingAction.household_id == household_id,
+                                              PendingAction.status == "open",
+                                              PendingAction.kind.in_(kinds))
+                  .order_by(PendingAction.created_at.desc(), PendingAction.id.desc())).first()
+
+
+def is_expired(a: PendingAction, now) -> bool:
+    return now >= a.expires_at
+
+
+def payload(a: PendingAction) -> dict:
+    return json.loads(a.payload_json or "{}")
+
+
+def set_status(s: Session, a: PendingAction, status: str) -> None:
+    a.status = status
+    s.add(a)
+    s.flush()
+
+
+def claim_open(engine, action_id: int, now) -> bool:
+    """open + unexpired -> executing, atomically. True only for the one caller that wins."""
+    with Session(engine) as s:
+        res = s.exec(update(PendingAction)
+                     .where(PendingAction.id == action_id, PendingAction.status == "open",
+                            PendingAction.expires_at > now)
+                     .values(status="executing"))
+        s.commit()
+        return res.rowcount == 1
+
+
+def finish(engine, action_id: int, status: str) -> None:
+    with Session(engine) as s:
+        a = s.get(PendingAction, action_id)
+        if a:
+            a.status = status
+            s.add(a)
+            s.commit()
+
+
+def expire_stale(s: Session, now) -> None:
+    for a in s.exec(select(PendingAction).where(PendingAction.status == "open", PendingAction.expires_at <= now)):
+        a.status = "expired"
+        s.add(a)

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DigiFridgey Remote</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5d6673; --line:#e2e5ea; --accent:#0b6bcb; --warn:#b54708; --ok:#067647; --bubble:#e9ebef; --me:#0b84ff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d22; --ink:#eef0f3; --muted:#9aa3af; --line:#2a2f37; --accent:#5aa9ff; --warn:#f79009; --ok:#47cd89; --bubble:#262a31; --me:#0b84ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding:16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; }
+  h1 { font-size:18px; margin:0; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+  .badge.sim { color:var(--warn); border-color:var(--warn); }
+  main { display:grid; gap:16px; padding:16px; grid-template-columns:1fr; max-width:1100px; margin:0 auto; }
+  @media (min-width: 860px) { main { grid-template-columns: 1fr 1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+  button { font:inherit; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:wait; }
+  select, input { font:inherit; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); min-width:0; }
+  .stats { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; }
+  .stat { border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .stat b { display:block; font-size:18px; font-variant-numeric: tabular-nums; }
+  .stat span { color:var(--muted); font-size:12px; }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:4px 0; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:8px; }
+  li:last-child { border-bottom:0; }
+  .soon { color:var(--warn); }
+  .chat { display:flex; flex-direction:column; gap:6px; max-height:420px; overflow-y:auto; padding:4px; }
+  .msg { max-width:85%; padding:8px 12px; border-radius:16px; white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { align-self:flex-end; background:var(--me); color:#fff; }
+  .msg.agent { align-self:flex-start; background:var(--bubble); }
+  #log { color:var(--muted); font-size:13px; white-space:pre-wrap; margin-top:8px; }
+  form { display:flex; gap:8px; margin-top:8px; }
+  form input { flex:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧊 DigiFridgey remote</h1>
+  <span id="now" class="badge">…</span>
+  <span id="modes"></span>
+</header>
+<main>
+  <section>
+    <h2>Presenter controls</h2>
+    <div class="row">
+      <select id="basket" aria-label="Basket">
+        <option value="weekly">Weekly · Avon Fresh Market</option>
+        <option value="quick">Quick · Corner Pantry Co.</option>
+        <option value="taco">Taco night · ValuMart</option>
+        <option value="oat">Oat milk + bananas · ValuMart</option>
+        <option value="fuel">Fuel · Avon Fuel Stop (not food)</option>
+      </select>
+      <button class="primary" data-act="buy">Buy (Nessie purchase)</button>
+    </div>
+    <div class="row">
+      <button data-act="advance" data-days="1">+1 day</button>
+      <button data-act="advance" data-days="3">+3 days</button>
+      <button data-act="sweep">Budget sweep offer</button>
+      <button data-act="reset">Reset demo</button>
+    </div>
+    <div id="log"></div>
+  </section>
+  <section>
+    <h2>Household</h2>
+    <div class="stats" id="stats"></div>
+    <p id="members" style="color:var(--muted);font-size:13px"></p>
+  </section>
+  <section>
+    <h2>Fridge</h2>
+    <ul id="fridge"></ul>
+  </section>
+  <section>
+    <h2>Shopping list</h2>
+    <ul id="list"></ul>
+  </section>
+  <section id="chatbox" hidden style="grid-column:1/-1">
+    <h2>SIMULATED iMessage (mock Photon)</h2>
+    <div class="chat" id="chat"></div>
+    <form id="send"><input id="text" placeholder="Text the fridge, e.g. what's expiring?" autocomplete="off"><button class="primary">Send</button></form>
+  </section>
+</main>
+<script>
+const HANDLE = "+15555550123";
+const token = new URLSearchParams(location.search).get("token");
+const H = token ? {"x-demo-token": token} : {};
+const $ = (id) => document.getElementById(id);
+const usd = (x) => x == null ? "–" : "$" + Number(x).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function call(method, path, body) {
+  const opts = {method, headers: {...H}};
+  if (body) { opts.headers["content-type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.status);
+  return data;
+}
+
+async function refresh() {
+  try {
+    const s = await call("GET", "/demo/state?handle=" + encodeURIComponent(HANDLE));
+    $("now").textContent = "App clock: " + s.now_local + (s.offset_days ? ` (+${s.offset_days}d)` : "");
+    $("modes").innerHTML = [["Nessie", s.mock_nessie], ["Photon", s.mock_photon]]
+      .map(([n, sim]) => `<span class="badge ${sim ? "sim" : ""}">${n}: ${sim ? "SIMULATED" : "live"}</span>`).join(" ")
+      + ` <span class="badge">LLM: ${s.llm ? "Gemini" : "keywords"}</span>`;
+    const h = s.household;
+    if (h) {
+      $("stats").innerHTML = [
+        ["Everyday Checking", usd(h.checking_balance)], ["Grocery Fund", usd(h.fund_balance)],
+        ["Groceries this week", usd(h.week_spend) + " / " + usd(h.budget)], ["Wasted this week", usd(h.week_waste)],
+      ].map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
+      $("members").textContent = h.members.length ? "Texting: " + h.members.join(", ") : "Nobody has texted the agent yet.";
+      $("fridge").innerHTML = h.fridge.length ? h.fridge.map(i =>
+        `<li><span>${esc(i.emoji)} ${esc(i.name)}</span><span class="${["today","tomorrow"].includes(i.expires) ? "soon" : ""}">${esc(i.expires)}</span></li>`).join("")
+        : "<li>Empty</li>";
+      $("list").innerHTML = h.list.length ? h.list.map(n => `<li>${esc(n)}</li>`).join("") : "<li>Empty</li>";
+    }
+    if (s.mock_photon) {
+      $("chatbox").hidden = false;
+      const chat = $("chat");
+      const atBottom = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 20;
+      chat.innerHTML = (s.conversation || []).map(m => `<div class="msg ${m.from}">${esc(m.text)}</div>`).join("");
+      if (atBottom) chat.scrollTop = chat.scrollHeight;
+    }
+  } catch (e) { $("log").textContent = "State error: " + e.message; }
+}
+
+document.querySelectorAll("button[data-act]").forEach(btn => btn.addEventListener("click", async () => {
+  const act = btn.dataset.act;
+  if (act === "reset" && !confirm("Reset local demo state and start a fresh synthetic customer?")) return;
+  btn.disabled = true;
+  try {
+    let res;
+    if (act === "buy") res = await call("POST", "/demo/buy?basket=" + $("basket").value);
+    if (act === "advance") res = await call("POST", "/demo/advance?days=" + btn.dataset.days);
+    if (act === "sweep") res = await call("POST", "/demo/sweep");
+    if (act === "reset") res = await call("POST", "/demo/reset");
+    $("log").textContent = act + " → " + JSON.stringify(res);
+  } catch (e) { $("log").textContent = act + " failed: " + e.message; }
+  btn.disabled = false;
+  refresh();
+}));
+
+$("send").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("text").value.trim();
+  if (!text) return;
+  $("text").value = "";
+  try { await call("POST", "/demo/mock/text", {handle: HANDLE, text}); } catch (err) { $("log").textContent = err.message; }
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

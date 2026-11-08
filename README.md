@@ -7,6 +7,13 @@ food recalls.
 iOS 26 · Swift 6 · SwiftUI · `@Observable` · **SpacetimeDB 2.x** (household data, Rust module) · Firebase Auth
 (optional, for email sign-in) · no other third-party deps.
 
+## Backend: Nessie + Photon (iMessage)
+
+[`backend/`](backend/README.md) is a Python FastAPI service that turns synthetic grocery
+transactions from Capital One's Nessie API into a fridge inventory and talks to you over iMessage
+through Photon: stock alerts, expiry nudges, food-waste dollars, and a YES-confirmed budget sweep
+into a Grocery Fund account. It runs offline with labeled mocks; see its README.
+
 ## Quick start (offline demo, no setup)
 
 ```bash

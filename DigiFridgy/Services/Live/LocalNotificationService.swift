@@ -159,6 +159,11 @@ final class LocalNotificationService: NotificationService {
         center.removeAllDeliveredNotifications()
     }
 
+    func removeNotifications(ids: [String]) {
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+        center.removeDeliveredNotifications(withIdentifiers: ids)
+    }
+
     func notifyNow(id: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

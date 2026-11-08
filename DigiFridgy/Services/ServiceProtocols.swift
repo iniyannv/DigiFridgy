@@ -137,6 +137,12 @@ protocol NotificationService: AnyObject, Sendable {
     /// Removes every pending reminder (sign-out, leaving the household).
     func removeAllReminders()
     func notifyNow(id: String, title: String, body: String)
+    /// Clears posted (and still pending) notifications, e.g. a recall alert the user dismissed.
+    func removeNotifications(ids: [String])
+}
+
+extension NotificationService {
+    func removeNotifications(ids: [String]) {}
 }
 
 nonisolated enum HouseholdError: LocalizedError {

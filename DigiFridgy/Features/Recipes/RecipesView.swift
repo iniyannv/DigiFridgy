@@ -69,6 +69,7 @@ struct RecipesView: View {
                 results(shown)
             }
             .listSectionSpacing(.compact)
+            .expandsTabBarOnScrollUp()
             .navigationTitle("Recipes")
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: scope == .saved ? "Search saved recipes" : "Search recipes, e.g. tacos")
@@ -286,6 +287,9 @@ struct RecipesView: View {
             parts.append("Saved on this device.")
         } else {
             parts.append(app.services.isMock || !Secrets.hasEdamam ? "Sample recipes." : "Recipes from Edamam.")
+            if IngredientSwapper.needsAdapting(filters.diets) {
+                parts.append("Recipes that usually have meat show what to swap in, like tofu.")
+            }
         }
         if !allergens.isEmpty {
             parts.append("Avoiding \(allergens.map(\.displayName).joined(separator: ", ")) (your allergens).")
@@ -388,8 +392,19 @@ struct RecipesView: View {
             guard !Task.isCancelled else { return }
         }
         do {
-            let recipes = try await app.services.recipes.search(request, userId: app.user?.uid)
+            var recipes = try await app.services.recipes.search(request, userId: app.user?.uid)
             guard generation == loadGeneration, !Task.isCancelled else { return }
+            // Meat-free filters: also show recipes that usually have meat, cooked with tofu instead.
+            if IngredientSwapper.needsAdapting(request.filters.diets) {
+                var relaxed = request
+                relaxed.filters = IngredientSwapper.relaxed(request.filters)
+                // Fewer queries for the extra search: Edamam's free plan allows about ten calls a minute.
+                relaxed.queries = Array(request.queries.prefix(2))
+                if let candidates = try? await app.services.recipes.search(relaxed, userId: app.user?.uid) {
+                    guard generation == loadGeneration, !Task.isCancelled else { return }
+                    recipes = IngredientSwapper.merge(native: recipes, candidates: candidates, diets: request.filters.diets)
+                }
+            }
             fetched = RecipeScorer.removingNearDuplicates(recipes)
             fetchedFor = request
             errorMessage = nil

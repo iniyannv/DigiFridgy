@@ -26,6 +26,8 @@ nonisolated struct Recipe: Codable, Identifiable, Hashable, Sendable {
     /// "Vegetarian", "Gluten-Free", "High-Protein"…
     var healthLabels: [String]?
     var dietLabels: [String]?
+    /// Set when the recipe was adapted to a diet filter (meat swapped for tofu, and so on).
+    var swaps: [IngredientSwap]?
 
     var caloriesPerServing: Double? {
         guard let calories, calories > 0 else { return nil }
@@ -106,6 +108,28 @@ extension RecipeDifficulty {
 }
 
 extension Recipe {
+    /// Cooking time to show: the source's, else an estimate from how many ingredients it needs.
+    nonisolated var displayMinutes: Int {
+        if let totalTimeMinutes { return Int(totalTimeMinutes.rounded()) }
+        let estimate = 10 + 4 * max(realIngredientCount, 3)
+        return Int((Double(estimate) / 5).rounded()) * 5
+    }
+
+    nonisolated var isTimeEstimated: Bool { totalTimeMinutes == nil }
+
+    /// Calories per serving to show: the source's, else a rough estimate from the ingredient count.
+    nonisolated var displayCalories: Int {
+        if let caloriesPerServing { return Int(caloriesPerServing.rounded()) }
+        return max(150, realIngredientCount * 80) / 10 * 10
+    }
+
+    nonisolated var isCaloriesEstimated: Bool { caloriesPerServing == nil }
+
+    /// "25 min" or "~25 min" when estimated.
+    nonisolated var timeText: String { (isTimeEstimated ? "~" : "") + "\(displayMinutes) min" }
+    /// "420 kcal" or "~420 kcal" when estimated.
+    nonisolated var caloriesText: String { (isCaloriesEstimated ? "~" : "") + "\(displayCalories) kcal" }
+
     /// Ingredients you'd actually gather (salt, oil and other pantry basics left out).
     nonisolated var realIngredientCount: Int {
         Set(ingredients.map { $0.food.lowercased().trimmingCharacters(in: .whitespaces) })

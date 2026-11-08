@@ -188,7 +188,8 @@ final class MockHouseholdRepository: HouseholdRepository {
 final class MockProductLookupService: ProductLookupService {
     func lookup(barcode: String) async throws -> ProductInfo? {
         try? await Task.sleep(for: .milliseconds(300))
-        return DemoData.products[Barcode.normalize(barcode)]
+        let code = Barcode.normalize(barcode)
+        return DemoData.products[code] ?? BarcodeDemoData.products[code]
     }
 
     func nutrition(forName name: String) async throws -> Nutrition? {

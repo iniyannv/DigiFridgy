@@ -9,6 +9,8 @@ struct SettingsView: View {
     @State private var mockMode = UserDefaults.standard.bool(forKey: AppServices.mockDefaultsKey)
     @State private var radius: Double = 10
     @State private var checksResult: String?
+    /// The invite code is hidden until the eye is tapped (it lets anyone into the household).
+    @State private var showInviteCode = false
 
     var body: some View {
         NavigationStack {
@@ -47,6 +49,8 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .expandsTabBarOnScrollUp()
+            .onDisappear { showInviteCode = false }
             .onAppear { radius = app.profile?.searchRadiusMiles ?? 10 }
             .sheet(isPresented: $showLinkEmail) { LinkEmailSheet() }
             .confirmationDialog("Leave \(app.household?.name ?? "household")?", isPresented: $confirmLeave,
@@ -110,9 +114,24 @@ struct SettingsView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Invite code").font(.caption).foregroundStyle(.secondary)
-                        Text(household.inviteCode).font(.title2.monospaced().bold()).textSelection(.enabled)
+                        Text(showInviteCode ? household.inviteCode
+                                            : String(repeating: "*", count: max(household.inviteCode.count, 6)))
+                            .font(.title2.monospaced().bold())
+                            .textSelection(.enabled)
+                            .contentTransition(.numericText())
+                            .accessibilityLabel(showInviteCode ? household.inviteCode : "Hidden")
                     }
                     Spacer()
+                    Button {
+                        withAnimation(.snappy) { showInviteCode.toggle() }
+                    } label: {
+                        Label(showInviteCode ? "Hide invite code" : "Show invite code",
+                              systemImage: showInviteCode ? "eye.slash" : "eye")
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.borderless)
                     Button {
                         UIPasteboard.general.string = household.inviteCode
                         app.showMessage("Invite code copied")
@@ -181,6 +200,7 @@ struct SettingsView: View {
     private var demoSection: some View {
         Section {
             Button("Seed demo household", systemImage: "wand.and.stars") { Task { await app.seedDemoHousehold() } }
+            Button("Seed demo with real barcodes", systemImage: "barcode") { Task { await app.seedBarcodeDemo() } }
             Button("Simulate recall", systemImage: "exclamationmark.octagon") { Task { await app.simulateRecall() } }
             Button("Simulate price drop", systemImage: "arrow.down.circle") { Task { await app.simulatePriceDrop() } }
             Button("Test expiry notification", systemImage: "bell") { app.testExpiryNotification() }
@@ -202,7 +222,7 @@ struct SettingsView: View {
         } header: {
             Text("Demo tools")
         } footer: {
-            Text("Seeding adds ~14 realistic items (some expiring tomorrow, one recalled) and, if you have no allergens set, turns on sesame.")
+            Text("Seeding adds ~14 realistic items (some expiring tomorrow, one recalled) and, if you have no allergens set, turns on sesame. The real-barcode demo adds \(BarcodeDemoData.fridge.count) real products with their UPCs and photos from Open Food Facts, plus \(BarcodeDemoData.shopping.count) barcoded shopping-list items.")
         }
     }
 

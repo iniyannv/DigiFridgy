@@ -23,6 +23,7 @@ struct RecipeDetailView: View {
         NavigationStack {
             List {
                 header
+                if let swaps = recipe.swaps, !swaps.isEmpty { swapsSection(swaps) }
                 if !scored.uses.isEmpty { fromFridge }
                 ingredientsSection
                 if !scored.missing.isEmpty {
@@ -77,8 +78,6 @@ struct RecipeDetailView: View {
             }
             .sheet(item: $openURL) { SafariView(url: $0.url).ignoresSafeArea() }
         }
-        // Sheets cover the app's toast layer; show confirmations here too.
-        .toastOverlay()
     }
 
     // MARK: Sections
@@ -114,9 +113,11 @@ struct RecipeDetailView: View {
 
     private var stats: some View {
         HStack(spacing: 0) {
-            stat(value: recipe.totalTimeMinutes.map { "\(Int($0))" } ?? "–", unit: "min", label: "Total time")
+            stat(value: (recipe.isTimeEstimated ? "~" : "") + "\(recipe.displayMinutes)", unit: "min",
+                 label: recipe.isTimeEstimated ? "Est. time" : "Total time")
             Divider().frame(height: 32)
-            stat(value: recipe.caloriesPerServing.map { "\(Int($0.rounded()))" } ?? "–", unit: "kcal", label: "Per serving")
+            stat(value: (recipe.isCaloriesEstimated ? "~" : "") + "\(recipe.displayCalories)", unit: "kcal",
+                 label: recipe.isCaloriesEstimated ? "Est. per serving" : "Per serving")
             Divider().frame(height: 32)
             stat(value: recipe.servings.map { "\(Int($0))" } ?? "–", unit: "", label: "Servings")
             Divider().frame(height: 32)
@@ -146,6 +147,26 @@ struct RecipeDetailView: View {
         var seen = Set<String>()
         return tags.map { $0.replacingOccurrences(of: "/", with: " / ").capitalizedFirst }
             .filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    private func swapsSection(_ swaps: [IngredientSwap]) -> some View {
+        Section {
+            ForEach(swaps, id: \.original) { swap in
+                HStack(spacing: 8) {
+                    Text(swap.original.capitalizedFirst).strikethrough().foregroundStyle(.secondary)
+                    Image(systemName: "arrow.right").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(swap.replacement.capitalizedFirst).bold()
+                    Spacer()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Use \(swap.replacement) instead of \(swap.original)")
+            }
+        } header: {
+            Label("Adapted for your diet", systemImage: "arrow.triangle.2.circlepath")
+        } footer: {
+            Text("This recipe usually has these ingredients. Use the swaps when you cook it; the full recipe on the site still lists the originals.")
+        }
     }
 
     private var fromFridge: some View {

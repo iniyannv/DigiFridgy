@@ -23,11 +23,36 @@ struct RecipeCard: View {
                     usesText.font(.subheadline).lineLimit(2)
                 }
                 missingText.font(.caption).lineLimit(1)
-                ViewThatFits(in: .horizontal) {
-                    metaRow(showCalories: true, chip: "Uses \(scored.expiringCount) expiring")
-                    metaRow(showCalories: true, chip: "\(scored.expiringCount) expiring")
-                    metaRow(showCalories: false, chip: "\(scored.expiringCount) expiring")
+                if let swap = scored.recipe.swapSummary {
+                    Label(swap, systemImage: "arrow.triangle.2.circlepath")
+                        .labelStyle(CompactLabelStyle())
+                        .font(.caption)
+                        .foregroundStyle(Tone.info.color)
+                        .lineLimit(2)
                 }
+                // Time and calories always show; the expiring chip drops to its own line when space is short.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        metaItems
+                        Spacer(minLength: 4)
+                        expiringChip
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 10) { metaItems }
+                        expiringChip
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 10) {
+                            StatusChip(text: scored.recipe.difficulty.label, tone: scored.recipe.difficulty.tone).fixedSize()
+                            timeLabel
+                        }
+                        caloriesLabel
+                        expiringChip
+                    }
+                }
+                .labelStyle(CompactLabelStyle())
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .padding(.top, 2)
             }
         }
@@ -37,23 +62,29 @@ struct RecipeCard: View {
         .accessibilityLabel(accessibilityText)
     }
 
-    private func metaRow(showCalories: Bool, chip: String) -> some View {
-        HStack(spacing: 10) {
-            StatusChip(text: scored.recipe.difficulty.label, tone: scored.recipe.difficulty.tone).fixedSize()
-            if let minutes = scored.recipe.totalTimeMinutes {
-                Label("\(Int(minutes)) min", systemImage: "clock").fixedSize()
-            }
-            if showCalories, let kcal = scored.recipe.caloriesPerServing {
-                Label("\(Int(kcal.rounded())) kcal", systemImage: "flame").fixedSize()
-            }
-            Spacer(minLength: 4)
-            if scored.expiringCount > 0 {
-                StatusChip(text: chip, tone: .success).fixedSize()
-            }
+    /// Same wording on every card: "Uses 2 expiring".
+    static func expiringText(_ count: Int) -> String { "Uses \(count) expiring" }
+
+    @ViewBuilder
+    private var metaItems: some View {
+        StatusChip(text: scored.recipe.difficulty.label, tone: scored.recipe.difficulty.tone).fixedSize()
+        timeLabel
+        caloriesLabel
+    }
+
+    private var timeLabel: some View {
+        Label(scored.recipe.timeText, systemImage: "clock").fixedSize()
+    }
+
+    private var caloriesLabel: some View {
+        Label(scored.recipe.caloriesText, systemImage: "flame").fixedSize()
+    }
+
+    @ViewBuilder
+    private var expiringChip: some View {
+        if scored.expiringCount > 0 {
+            StatusChip(text: Self.expiringText(scored.expiringCount), tone: .success).fixedSize()
         }
-        .labelStyle(CompactLabelStyle())
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
 
     /// "Missing: bacon, balsamic vinegar +2", or a reassuring line when nothing is missing.
@@ -89,9 +120,12 @@ struct RecipeCard: View {
         if isSaved { parts.append("saved") }
         parts.append(scored.recipe.difficulty.label.lowercased())
         if !scored.uses.isEmpty { parts.append("uses \(scored.uses.map(\.itemName).joined(separator: ", "))") }
-        if scored.expiringCount > 0 { parts.append("\(scored.expiringCount) expiring soon") }
+        if scored.expiringCount > 0 { parts.append(Self.expiringText(scored.expiringCount).lowercased()) }
         parts.append(scored.missing.isEmpty ? "nothing missing" : "missing \(scored.missing.count)")
-        if let minutes = scored.recipe.totalTimeMinutes { parts.append("\(Int(minutes)) minutes") }
+        if let swap = scored.recipe.swapSummary { parts.append(swap) }
+        let recipe = scored.recipe
+        parts.append("\(recipe.isTimeEstimated ? "about " : "")\(recipe.displayMinutes) minutes")
+        parts.append("\(recipe.isCaloriesEstimated ? "about " : "")\(recipe.displayCalories) calories per serving")
         return parts.joined(separator: ", ")
     }
 

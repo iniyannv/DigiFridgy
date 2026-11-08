@@ -9,6 +9,8 @@ struct InventoryView: View {
     @State private var showReceiptScanner = false
     @State private var search = ""
     @State private var countChanges = 0
+    @State private var isSelecting = false
+    @State private var selection: Set<String> = []
 
     private var filtered: [FridgeItem] {
         let sorted = app.sortedItems
@@ -32,38 +34,39 @@ struct InventoryView: View {
             .navigationTitle(app.household?.name ?? "Fridge")
             .navigationDestination(for: String.self) { ItemDetailView(itemId: $0) }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink {
-                        ShoppingListView()
-                    } label: {
-                        Label("Shopping list", systemImage: "checklist")
-                            .overlay(alignment: .topTrailing) {
-                                if openShopping > 0 {
-                                    Text("\(openShopping)").font(.caption2.bold()).monospacedDigit()
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16)
-                                        .background(.red, in: .capsule)
-                                        .offset(x: 9, y: -8)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                    }
-                    .accessibilityValue(openShopping > 0 ? "\(openShopping) to buy" : "")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
-                        Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
-                        if bank.isLinked {
-                            Button("Add from card", systemImage: "creditcard") { showCardPurchases = true }
-                        } else if bank.status == .notLinked {
-                            Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
+                if isSelecting {
+                    ToolbarItem(placement: .topBarLeading) {
+                        let allIDs = Set(filtered.map(\.id))
+                        Button(selection == allIDs && !allIDs.isEmpty ? "Deselect All" : "Select All") {
+                            selection = selection == allIDs ? [] : allIDs
                         }
-                    } label: {
-                        Label("Add items", systemImage: "plus")
                     }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { endSelecting() }.bold()
+                    }
+                } else {
+                    normalToolbar
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                if isSelecting {
+                    SelectionActionBar(count: selection.count) {
+                        Button("Add to list", systemImage: "cart.badge.plus") {
+                            app.addToShoppingList(names: selectedItems.map(\.name))
+                            endSelecting()
+                        }
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            let chosen = selectedItems
+                            endSelecting()
+                            Task { await app.delete(chosen) }
+                        }
+                        .tint(.red)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: isSelecting)
+            .onChange(of: app.items.map(\.id)) { _, ids in selection.formIntersection(ids) }
             .sheet(isPresented: $showBarcodeScanner) { BarcodeScanSheet() }
             .sheet(isPresented: $showReceiptScanner) { ReceiptScanSheet() }
             .sheet(isPresented: $showConnectBank) { ConnectBankSheet() }
@@ -71,9 +74,56 @@ struct InventoryView: View {
         }
     }
 
+    private var selectedItems: [FridgeItem] { app.sortedItems.filter { selection.contains($0.id) } }
+
+    private func endSelecting() {
+        isSelecting = false
+        selection = []
+    }
+
+    @ToolbarContentBuilder
+    private var normalToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            NavigationLink {
+                ShoppingListView()
+            } label: {
+                Label("Shopping list", systemImage: "checklist")
+                    .overlay(alignment: .topTrailing) {
+                        if openShopping > 0 {
+                            Text("\(openShopping)").font(.caption2.bold()).monospacedDigit()
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4).frame(minWidth: 16, minHeight: 16)
+                                .background(.red, in: .capsule)
+                                .offset(x: 9, y: -8)
+                                .accessibilityHidden(true)
+                        }
+                    }
+            }
+            .accessibilityValue(openShopping > 0 ? "\(openShopping) to buy" : "")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
+                Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
+                if bank.isLinked {
+                    Button("Add from card", systemImage: "creditcard") { showCardPurchases = true }
+                } else if bank.status == .notLinked {
+                    Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
+                }
+            } label: {
+                Label("Add items", systemImage: "plus")
+            }
+        }
+        if !app.items.isEmpty {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Select") { isSelecting = true }
+            }
+        }
+    }
+
     private var list: some View {
-        List {
-            if search.isEmpty {
+        List(selection: $selection) {
+            if search.isEmpty && !isSelecting {
                 Section {
                     FridgeSummaryCard()
                 }
@@ -82,26 +132,57 @@ struct InventoryView: View {
                 }
             }
 
-            if search.isEmpty && !app.approvals.isEmpty {
+            if search.isEmpty && !isSelecting && !app.approvals.isEmpty {
                 ApprovalsSection()
             }
 
             let recalled = app.recalledItems
-            if !recalled.isEmpty && search.isEmpty {
+            if !recalled.isEmpty && search.isEmpty && !isSelecting {
                 Section {
                     ForEach(recalled) { item in
-                        NavigationLink(value: item.id) {
-                            Label {
-                                VStack(alignment: .leading) {
-                                    Text("\(item.recallFlag?.isPossible == true ? "Possible recall" : "Recall"): \(item.name)").bold()
-                                    Text(item.recallFlag?.reason ?? "").font(.caption).lineLimit(2)
+                        HStack(spacing: 4) {
+                            NavigationLink(value: item.id) {
+                                Label {
+                                    VStack(alignment: .leading) {
+                                        Text("\(item.recallFlag?.isPossible == true ? "Possible recall" : "Recall"): \(item.name)").bold()
+                                        Text(item.recallFlag?.reason ?? "").font(.caption).lineLimit(2)
+                                    }
+                                } icon: {
+                                    Image(systemName: "exclamationmark.octagon.fill")
+                                        .foregroundStyle(item.recallFlag?.tone.color ?? Tone.danger.color)
                                 }
-                            } icon: {
-                                Image(systemName: "exclamationmark.octagon.fill")
-                                    .foregroundStyle(item.recallFlag?.tone.color ?? Tone.danger.color)
                             }
+                            Button {
+                                Task { await app.dismissRecall(item) }
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.title3)
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(.rect)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Dismiss recall for \(item.name)")
                         }
                         .listRowBackground((item.recallFlag?.tone ?? .danger).fill)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button {
+                                Task { await app.dismissRecall(item) }
+                            } label: {
+                                Label("Dismiss", systemImage: "xmark")
+                            }
+                            .tint(.gray)
+                        }
+                        .contextMenu {
+                            Button("Not my product", systemImage: "hand.raised") {
+                                Task { await app.dismissRecall(item) }
+                            }
+                        }
+                    }
+                } footer: {
+                    if recalled.contains(where: { $0.recallFlag?.isPossible == true }) {
+                        Text("Possible recalls are close matches, not certain. Check the details, then dismiss any that aren't your product.")
                     }
                 }
             }
@@ -115,7 +196,39 @@ struct InventoryView: View {
                 if !items.isEmpty {
                     Section {
                         ForEach(items) { item in
+                            if isSelecting {
+                                InventoryRow(item: item).tag(item.id)
+                            } else {
+                                inventoryRow(item)
+                            }
+                        }
+                    } header: {
+                        Text(title)
+                    } footer: {
+                        // Bank purchases know their price, so expired food has a dollar figure.
+                        let lost = items.filter { $0.urgency() == .expired }.compactMap(\.value).reduce(0, +)
+                        if lost > 0 && !isSelecting {
+                            Text("\(lost.usd) of groceries expired. Toss or use them so your budget stays accurate.")
+                        }
+                    }
+                }
+            }
+        }
+        .environment(\.editMode, .constant(isSelecting ? .active : .inactive))
+        .overlay {
+            if !search.isEmpty && filtered.isEmpty {
+                ContentUnavailableView.search(text: search)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: countChanges)
+        .searchable(text: $search, prompt: "Search your fridge")
+        .refreshable { await app.runChecks() }
+        .expandsTabBarOnScrollUp()
+    }
+
+    private func inventoryRow(_ item: FridgeItem) -> some View {
                             NavigationLink(value: item.id) { InventoryRow(item: item) }
+                                .tag(item.id)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
                                         Task { await app.delete(item, undoable: true) }
@@ -151,28 +264,11 @@ struct InventoryView: View {
                                     Button("Delete", systemImage: "trash", role: .destructive) {
                                         Task { await app.delete(item, undoable: true) }
                                     }
+                                    Button("Select", systemImage: "checkmark.circle") {
+                                        isSelecting = true
+                                        selection = [item.id]
+                                    }
                                 }
-                        }
-                    } header: {
-                        Text(title)
-                    } footer: {
-                        // Bank purchases know their price, so expired food has a dollar figure.
-                        let lost = items.filter { $0.urgency() == .expired }.compactMap(\.value).reduce(0, +)
-                        if lost > 0 {
-                            Text("\(lost.usd) of groceries expired. Toss or use them so your budget stays accurate.")
-                        }
-                    }
-                }
-            }
-        }
-        .overlay {
-            if !search.isEmpty && filtered.isEmpty {
-                ContentUnavailableView.search(text: search)
-            }
-        }
-        .sensoryFeedback(.selection, trigger: countChanges)
-        .searchable(text: $search, prompt: "Search your fridge")
-        .refreshable { await app.runChecks() }
     }
 
     private var emptyState: some View {
@@ -194,6 +290,8 @@ struct InventoryView: View {
             }
             if app.services.isMock {
                 Button("Load demo items") { Task { await app.seedDemoHousehold() } }
+                    .font(.footnote)
+                Button("Load real-barcode demo") { Task { await app.seedBarcodeDemo() } }
                     .font(.footnote)
             }
         }

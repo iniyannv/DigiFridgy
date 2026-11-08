@@ -7,6 +7,15 @@ import SafariServices
 struct ToastOverlay: ViewModifier {
     @Environment(AppState.self) private var app
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    /// How far the toast has been dragged; past the threshold it's dismissed.
+    @State private var drag: CGSize = .zero
+    /// Reports where the toast is on screen (nil when hidden), so its window only takes touches there.
+    var reportFrame: ((CGRect?) -> Void)?
+
+    /// Seconds before a toast goes away on its own (Undo gets a little longer to reach).
+    static func lifetime(for toast: Toast) -> Double {
+        toast.isError ? 6 : toast.actionTitle != nil ? 5 : 3.5
+    }
 
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
@@ -22,45 +31,140 @@ struct ToastOverlay: ViewModifier {
                     if let title = toast.actionTitle, let action = toast.action {
                         Button(title) {
                             action()
-                            app.toast = nil
+                            dismiss(toast)
                         }
                         .font(.subheadline.bold())
                         .frame(minHeight: 44)
+                        .contentShape(.rect)
                     }
                     Button {
-                        app.toast = nil
+                        dismiss(toast)
                     } label: {
-                        Label("Dismiss", systemImage: "xmark")
-                            .labelStyle(.iconOnly)
+                        Image(systemName: "xmark")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .frame(minWidth: 32, minHeight: 44)
+                            .frame(width: 44, height: 44)
+                            // The whole 44pt square is tappable, not just the glyph.
+                            .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Dismiss")
                 }
                 .padding(.leading, 16)
-                .padding(.trailing, 8)
+                .padding(.trailing, 4)
                 .padding(.vertical, 2)
+                // Mostly opaque, so toolbar buttons behind it don't show through the glass.
+                .background(Color(uiColor: .systemBackground).opacity(0.75), in: .capsule)
                 .glassEffect(.regular, in: .capsule)
                 .padding(.horizontal)
                 .padding(.top, 8)
+                .offset(x: drag.width, y: min(0, drag.height))
+                .opacity(1 - min(0.6, (abs(drag.width) + max(0, -drag.height)) / 250))
+                .simultaneousGesture(
+                    // Swipe up or sideways to clear it.
+                    DragGesture(minimumDistance: 8)
+                        .onChanged { drag = $0.translation }
+                        .onEnded { value in
+                            let flung = abs(value.predictedEndTranslation.width) > 120 || value.predictedEndTranslation.height < -40
+                            if flung || abs(value.translation.width) > 80 || value.translation.height < -24 {
+                                dismiss(toast)
+                            } else {
+                                withAnimation(.spring(duration: 0.3)) { drag = .zero }
+                            }
+                        }
+                )
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { reportFrame?($0) }
+                .onDisappear { reportFrame?(nil) }
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .accessibilityElement(children: .contain)
+                .accessibilityAction(named: "Dismiss") { dismiss(toast) }
                 .task(id: toast.id) {
                     AccessibilityNotification.Announcement(toast.message).post()
-                    // Toasts with an action (Undo, Open…) or under VoiceOver stay until dismissed.
-                    guard toast.actionTitle == nil, !voiceOver else { return }
-                    try? await Task.sleep(for: .seconds(toast.isError ? 6 : 3.5))
-                    if app.toast?.id == toast.id { app.toast = nil }
+                    // VoiceOver users dismiss toasts themselves, so an Undo can't vanish before it's reached.
+                    guard !voiceOver else { return }
+                    try? await Task.sleep(for: .seconds(Self.lifetime(for: toast)))
+                    guard !Task.isCancelled else { return }
+                    dismiss(toast)
                 }
             }
         }
         .animation(.spring(duration: 0.35), value: app.toast?.id)
+        .onChange(of: app.toast?.id) { drag = .zero }
+    }
+
+    private func dismiss(_ toast: Toast) {
+        if app.toast?.id == toast.id { app.toast = nil }
     }
 }
 
 extension View {
     func toastOverlay() -> some View { modifier(ToastOverlay()) }
+
+    /// Shows the app's toasts in a window of their own, above navigation bars, the tab bar and sheets.
+    /// (Drawn inside the app's window, the navigation bar sat on top of the toast and took its taps.)
+    func toastWindow(_ app: AppState) -> some View { background(ToastWindowInstaller(app: app)) }
+}
+
+/// A window that only takes touches on the toast; everything else falls through to the app.
+final class ToastPassThroughWindow: UIWindow {
+    var toastFrame: CGRect?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard let toastFrame, toastFrame.contains(point) else { return nil }
+        return super.hitTest(point, with: event)
+    }
+}
+
+@MainActor
+final class ToastWindowController {
+    static let shared = ToastWindowController()
+    private var window: ToastPassThroughWindow?
+
+    func install(in scene: UIWindowScene, app: AppState) {
+        guard window?.windowScene !== scene else { return }
+        let window = ToastPassThroughWindow(windowScene: scene)
+        // Above the app window (and its sheets), below system alerts and the keyboard.
+        window.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
+        window.backgroundColor = .clear
+        let host = UIHostingController(rootView: ToastHost(window: window).environment(app))
+        host.view.backgroundColor = .clear
+        window.rootViewController = host
+        window.isHidden = false
+        self.window = window
+    }
+}
+
+private struct ToastHost: View {
+    let window: ToastPassThroughWindow
+
+    var body: some View {
+        Color.clear
+            .modifier(ToastOverlay(reportFrame: { [weak window] frame in window?.toastFrame = frame }))
+    }
+}
+
+private struct ToastWindowInstaller: UIViewRepresentable {
+    let app: AppState
+
+    func makeUIView(context: Context) -> InstallerView { InstallerView(app: app) }
+    func updateUIView(_ view: InstallerView, context: Context) {}
+
+    final class InstallerView: UIView {
+        let app: AppState
+
+        init(app: AppState) {
+            self.app = app
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if let scene = window?.windowScene { ToastWindowController.shared.install(in: scene, app: app) }
+        }
+    }
 }
 
 // MARK: - Category visuals
@@ -119,8 +223,20 @@ struct ItemThumbnail: View {
     var size: CGFloat = 44
 
     var body: some View {
+        CategoryThumbnail(categoryID: item.category, imageURL: item.imageURL, size: size)
+    }
+}
+
+/// Product photo when there is one, else the food type's emoji, in a rounded tile. Shared by fridge and
+/// shopping-list rows so both lists look the same.
+struct CategoryThumbnail: View {
+    var categoryID: String
+    var imageURL: String?
+    var size: CGFloat = 44
+
+    var body: some View {
         Group {
-            if let url = item.imageURL.flatMap(URL.init(string:)) {
+            if let url = imageURL.flatMap(URL.init(string:)) {
                 AsyncImage(url: url) { image in
                     image.resizable().scaledToFill()
                 } placeholder: {
@@ -137,9 +253,38 @@ struct ItemThumbnail: View {
     }
 
     private var emoji: some View {
-        Text(CategoryStyle.emoji(for: item.category))
+        Text(CategoryStyle.emoji(for: categoryID))
             .font(.system(size: size * 0.55))
             .accessibilityHidden(true)
+    }
+}
+
+/// Bottom bar of actions for the selected rows in a list's select mode.
+struct SelectionActionBar<Actions: View>: View {
+    var count: Int
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(count == 0 ? "Select items" : "\(count) selected")
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(count == 0 ? .secondary : .primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            actions
+                .lineLimit(1)
+                .fixedSize()
+                .disabled(count == 0)
+        }
+        .labelStyle(.titleAndIcon)
+        .buttonStyle(.glass)
+        .controlSize(.regular)
+        .padding(.leading, 20)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .glassEffect(.regular, in: .capsule)
+        .padding(.horizontal)
+        .padding(.bottom, 8)
     }
 }
 

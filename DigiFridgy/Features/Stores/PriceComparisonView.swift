@@ -54,6 +54,19 @@ struct StoresTabView: View {
                 let open = app.shoppingList.filter { !$0.done }
                 if !open.isEmpty {
                     Section("Shopping list") {
+                        NavigationLink {
+                            BasketComparisonView(entries: open)
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Price the whole list").font(.body.weight(.semibold))
+                                    Text("\(open.count) \(open.count == 1 ? "item" : "items") at stores near you, with \(SalesTax.rateText) tax")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } icon: {
+                                Image(systemName: "storefront").foregroundStyle(.tint)
+                            }
+                        }
                         ForEach(open) { entry in
                             NavigationLink(value: PriceTarget(name: entry.name, upc: entry.barcode)) {
                                 Label(entry.name, systemImage: "checklist")
@@ -84,6 +97,7 @@ struct StoresTabView: View {
                     Text(Self.footer(kroger: app.services.kroger.isLive, walmart: app.services.walmart.isLive))
                 }
             }
+            .expandsTabBarOnScrollUp()
     }
 }
 

@@ -577,6 +577,34 @@ final class AppState {
         }
     }
 
+    /// Deletes several fridge items at once (multi-select), with one Undo for all of them.
+    func delete(_ selected: [FridgeItem]) async {
+        guard let hid = householdId, !selected.isEmpty else { return }
+        var deleted: [FridgeItem] = []
+        var failure: (any Error)?
+        for item in selected {
+            do {
+                try await services.repository.deleteItem(id: item.id, householdId: hid)
+                removedLocally(item, ranOut: false)
+                deleted.append(item)
+            } catch {
+                failure = failure ?? error
+            }
+        }
+        if let failure, deleted.isEmpty { showError(failure); return }
+        let message = deleted.count == 1 ? "Deleted \(deleted[0].name)" : "Deleted \(deleted.count) items"
+        showMessage(failure == nil ? message : message + " (some couldn't be deleted)", actionTitle: "Undo") { [weak self] in
+            guard let self else { return }
+            Task {
+                do {
+                    try await self.services.repository.saveItems(deleted, householdId: hid)
+                    deleted.forEach(self.upsertLocal)
+                    self.scheduleReconcile()
+                } catch { self.showError(error) }
+            }
+        }
+    }
+
     private func removedLocally(_ item: FridgeItem, ranOut: Bool) {
         items.removeAll { $0.id == item.id }
         scheduleReconcile()
@@ -602,7 +630,16 @@ final class AppState {
         guard let flag = updated.recallFlag else { return }
         updated.recallFlag = nil
         if !updated.dismissedRecallIDs.contains(flag.recallId) { updated.dismissedRecallIDs.append(flag.recallId) }
-        if await save(updated) { showMessage("Recall dismissed for \(updated.name)") }
+        if await save(updated) {
+            services.notifications.removeNotifications(ids: ["recall-\(item.id)"])
+            showMessage("Recall dismissed for \(updated.name)", actionTitle: "Undo") { [weak self] in
+                guard let self else { return }
+                var restored = self.item(id: item.id) ?? updated
+                restored.recallFlag = flag
+                restored.dismissedRecallIDs.removeAll { $0 == flag.recallId }
+                Task { _ = await self.save(restored) }
+            }
+        }
     }
 
     // MARK: Shopping list
@@ -678,6 +715,66 @@ final class AppState {
         guard let hid = householdId else { return }
         Task {
             do { try await services.repository.deleteShoppingItem(id: entry.id, householdId: hid) } catch { showError(error) }
+        }
+    }
+
+    /// Marks several shopping-list entries bought (or not bought).
+    func setShoppingItems(_ entries: [ShoppingListItem], done: Bool) {
+        guard let hid = householdId else { return }
+        let changed = entries.filter { $0.done != done }
+        guard !changed.isEmpty else { return }
+        Task {
+            do {
+                for entry in changed {
+                    var updated = entry
+                    updated.done = done
+                    try await services.repository.saveShoppingItem(updated, householdId: hid)
+                }
+                showMessage(done ? "Marked \(changed.count == 1 ? changed[0].name : "\(changed.count) items") bought"
+                                 : "Moved \(changed.count == 1 ? changed[0].name : "\(changed.count) items") back to the list")
+            } catch { showError(error) }
+        }
+    }
+
+    /// "I'll get them" for several entries at once.
+    func claimShoppingItems(_ entries: [ShoppingListItem]) {
+        guard let hid = householdId else { return }
+        let me = profile?.displayName.trimmingCharacters(in: .whitespaces) ?? ""
+        let name = me.isEmpty || me == "Me" ? "Someone" : me
+        let open = entries.filter { !$0.done && $0.claimedBy != name }
+        guard !open.isEmpty else { return }
+        Task {
+            do {
+                for entry in open {
+                    var updated = entry
+                    updated.claimedBy = name
+                    try await services.repository.saveShoppingItem(updated, householdId: hid)
+                }
+                showMessage(open.count == 1 ? "You're getting \(open[0].name)" : "You're getting \(open.count) items")
+            } catch { showError(error) }
+        }
+    }
+
+    /// Deletes several shopping-list entries, with one Undo.
+    func deleteShoppingItems(_ entries: [ShoppingListItem]) {
+        guard let hid = householdId, !entries.isEmpty else { return }
+        Task {
+            do {
+                for entry in entries {
+                    try await services.repository.deleteShoppingItem(id: entry.id, householdId: hid)
+                }
+                showMessage(entries.count == 1 ? "Deleted \(entries[0].name)" : "Deleted \(entries.count) items",
+                            actionTitle: "Undo") { [weak self] in
+                    guard let self else { return }
+                    Task {
+                        do {
+                            for entry in entries {
+                                try await self.services.repository.saveShoppingItem(entry, householdId: hid)
+                            }
+                        } catch { self.showError(error) }
+                    }
+                }
+            } catch { showError(error) }
         }
     }
 
@@ -845,6 +942,25 @@ final class AppState {
                 try await updateProfile { $0.allergens = [Allergen.sesame.rawValue] }
             }
             if !silently { showMessage("Added \(seed.count) demo items") }
+        } catch {
+            showError(error)
+        }
+    }
+
+    /// Fills the fridge and shopping list with real products (real UPCs, names and photos from Open Food Facts),
+    /// so barcode lookups, store prices and recalls run against real codes.
+    func seedBarcodeDemo() async {
+        guard let hid = householdId, let uid = user?.uid else { return }
+        let seed = BarcodeDemoData.householdItems(uid: uid)
+        do {
+            try await services.repository.saveItems(seed, householdId: hid)
+            seed.forEach(upsertLocal)
+            scheduleReconcile()
+            let onList = Set(shoppingList.compactMap(\.barcode))
+            for entry in BarcodeDemoData.shoppingItems() where !onList.contains(entry.barcode ?? "") {
+                try await services.repository.saveShoppingItem(entry, householdId: hid)
+            }
+            showMessage("Added \(seed.count) real products and \(BarcodeDemoData.shopping.count) list items")
         } catch {
             showError(error)
         }

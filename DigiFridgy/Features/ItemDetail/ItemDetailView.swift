@@ -100,7 +100,7 @@ struct ItemDetailView: View {
             }
 
             Section("Nutrition") {
-                NutriScoreBadge(grade: item.nutriScore)
+                NutriScoreBadge(app.shelfLife.nutriScore(for: item))
                     .padding(.vertical, 4)
                 if let nutrition = item.nutrition {
                     NutritionLabelView(nutrition: nutrition)

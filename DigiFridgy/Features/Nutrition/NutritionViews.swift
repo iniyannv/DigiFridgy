@@ -84,6 +84,17 @@ struct NutritionLabelView: View {
 /// Nutri-Score A–E strip with the product's grade enlarged.
 struct NutriScoreBadge: View {
     var grade: String?
+    /// The grade is the food type's typical one, not this product's.
+    var isEstimated = false
+
+    init(grade: String?, isEstimated: Bool = false) {
+        self.grade = grade
+        self.isEstimated = isEstimated
+    }
+
+    init(_ score: NutriScoreGrade?) {
+        self.init(grade: score?.grade, isEstimated: score?.isEstimated ?? false)
+    }
 
     static func color(for grade: String) -> Color {
         switch grade.uppercased() {
@@ -113,10 +124,12 @@ struct NutriScoreBadge: View {
             }
             if selected == nil {
                 Text("Not rated").font(.caption).foregroundStyle(.secondary)
+            } else if isEstimated {
+                Text("Typical for this food type").font(.caption).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Nutri-Score \(selected ?? "not rated")")
+        .accessibilityLabel("Nutri-Score \(selected.map { isEstimated ? "\($0), typical for this food type" : $0 } ?? "not rated")")
     }
 }
 

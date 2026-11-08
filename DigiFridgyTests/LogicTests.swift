@@ -11,6 +11,23 @@ struct ShelfLifeServiceTests {
         #expect(service.fridgeDays(for: "nonexistent") == 7)
     }
 
+    @Test func nutriScorePrefersScannedGradeThenFoodType() {
+        let scanned = FridgeItem(name: "Whole Milk", category: "milk", expiresAt: .now, source: .barcode, nutriScore: "B")
+        #expect(service.nutriScore(for: scanned) == NutriScoreGrade(grade: "b", isEstimated: false))
+
+        // Receipts, card purchases and iMessage have no grade of their own.
+        let fromReceipt = FridgeItem(name: "Baby spinach", category: "leafy_greens", expiresAt: .now, source: .receipt)
+        #expect(service.nutriScore(for: fromReceipt) == NutriScoreGrade(grade: "a", isEstimated: true))
+
+        let unknownGrade = FridgeItem(name: "Bacon", category: "bacon", expiresAt: .now, source: .barcode, nutriScore: "unknown")
+        #expect(service.nutriScore(for: unknownGrade) == NutriScoreGrade(grade: "e", isEstimated: true))
+
+        // Categories that vary too much stay unrated.
+        let snack = FridgeItem(name: "Trail mix", category: "snacks", expiresAt: .now, source: .receipt)
+        #expect(service.nutriScore(for: snack) == nil)
+        #expect(service.nutriScore(for: FridgeItem(name: "?", category: "other", expiresAt: .now, source: .receipt)) == nil)
+    }
+
     @Test(arguments: [
         (["en:dairies", "en:milks", "en:whole-milks"], "milk"),
         (["en:dairies", "en:yogurts", "en:fruit-yogurts", "en:blueberry-yogurts"], "yogurt"),

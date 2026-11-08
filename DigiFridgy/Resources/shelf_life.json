@@ -16,7 +16,8 @@
     "chocolate milk",
     "cow milk",
     "mlk"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "plant_milk",
@@ -33,7 +34,8 @@
     "plant based beverage",
     "rice milk",
     "cashew milk"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "cream",
@@ -48,7 +50,8 @@
     "half and half",
     "creamer",
     "coffee creamer"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "butter",
@@ -61,7 +64,8 @@
     "salted butter",
     "unsalted butter",
     "margarine"
-   ]
+   ],
+   "nutriScore": "e"
   },
   {
    "id": "yogurt",
@@ -79,7 +83,8 @@
     "skyr",
     "kefir",
     "ygrt"
-   ]
+   ],
+   "nutriScore": "b"
   },
   {
    "id": "sour_cream",
@@ -89,7 +94,8 @@
    "baselinePrice": 2.49,
    "keywords": [
     "sour cream"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "cottage_cheese",
@@ -99,7 +105,8 @@
    "baselinePrice": 3.29,
    "keywords": [
     "cottage cheese"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "cream_cheese",
@@ -111,7 +118,8 @@
     "cream cheese",
     "cream cheeses",
     "philadelphia"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "hard_cheese",
@@ -131,7 +139,8 @@
     "american cheese",
     "cheese slices",
     "chs"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "soft_cheese",
@@ -148,7 +157,8 @@
     "fresh cheese",
     "burrata",
     "camembert"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "shredded_cheese",
@@ -162,7 +172,8 @@
     "shredded cheddar",
     "shredded mozzarella",
     "shrd"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "ice_cream",
@@ -174,7 +185,8 @@
     "ice cream",
     "frozen dessert",
     "gelato"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "eggs",
@@ -189,7 +201,8 @@
     "chicken eggs",
     "dozen eggs",
     "lg eggs"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "chicken",
@@ -206,7 +219,8 @@
     "drumsticks",
     "chkn",
     "turkey breast"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "ground_meat",
@@ -221,7 +235,8 @@
     "hamburger",
     "grnd beef",
     "ground chuck"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "beef",
@@ -237,7 +252,8 @@
     "roast",
     "brisket",
     "stew meat"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "pork",
@@ -252,7 +268,8 @@
     "pork tenderloin",
     "ribs",
     "ham"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "sausage",
@@ -266,7 +283,8 @@
     "bratwurst",
     "chorizo",
     "kielbasa"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "bacon",
@@ -276,7 +294,8 @@
    "baselinePrice": 5.99,
    "keywords": [
     "bacon"
-   ]
+   ],
+   "nutriScore": "e"
   },
   {
    "id": "deli_meat",
@@ -294,7 +313,8 @@
     "cold cuts",
     "deli",
     "prosciutto"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "hot_dogs",
@@ -307,7 +327,8 @@
     "hot dog",
     "franks",
     "wieners"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "fish",
@@ -323,7 +344,8 @@
     "tuna steak",
     "trout",
     "fish fillets"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "smoked_fish",
@@ -335,7 +357,8 @@
     "smoked salmon",
     "lox",
     "smoked fish"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "shellfish",
@@ -352,7 +375,8 @@
     "clams",
     "shellfish",
     "seafood"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "tofu",
@@ -363,7 +387,8 @@
    "keywords": [
     "tofu",
     "tempeh"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "hummus",
@@ -377,7 +402,8 @@
     "dip",
     "dips",
     "tzatziki"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "salsa",
@@ -388,7 +414,8 @@
    "keywords": [
     "salsa",
     "pico de gallo"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "juice",
@@ -404,7 +431,8 @@
     "juices",
     "fruit juice",
     "oj"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "leafy_greens",
@@ -424,7 +452,8 @@
     "greens",
     "cabbage",
     "bok choy"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "berries",
@@ -441,7 +470,8 @@
     "blackberries",
     "strawberry",
     "blueberry"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "grapes",
@@ -452,7 +482,8 @@
    "keywords": [
     "grapes",
     "grape"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "apples",
@@ -465,7 +496,8 @@
     "apples",
     "pear",
     "pears"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "citrus",
@@ -483,7 +515,8 @@
     "grapefruit",
     "clementines",
     "mandarins"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "bananas",
@@ -495,7 +528,8 @@
     "banana",
     "bananas",
     "bnna"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "avocado",
@@ -506,7 +540,8 @@
    "keywords": [
     "avocado",
     "avocados"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "tomatoes",
@@ -519,7 +554,8 @@
     "tomatoes",
     "cherry tomatoes",
     "roma"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "carrots",
@@ -531,7 +567,8 @@
     "carrot",
     "carrots",
     "baby carrots"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "broccoli",
@@ -545,7 +582,8 @@
     "brussels sprouts",
     "asparagus",
     "green beans"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "peppers",
@@ -559,7 +597,8 @@
     "bell pepper",
     "jalapeno",
     "capsicum"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "cucumbers",
@@ -572,7 +611,8 @@
     "cucumbers",
     "zucchini",
     "squash"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "mushrooms",
@@ -583,7 +623,8 @@
    "keywords": [
     "mushroom",
     "mushrooms"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "onions",
@@ -598,7 +639,8 @@
     "shallots",
     "green onions",
     "scallions"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "potatoes",
@@ -611,7 +653,8 @@
     "potatoes",
     "sweet potato",
     "yams"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "herbs",
@@ -626,7 +669,8 @@
     "basil",
     "mint",
     "dill"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "celery",
@@ -636,7 +680,8 @@
    "baselinePrice": 1.99,
    "keywords": [
     "celery"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "corn",
@@ -647,7 +692,8 @@
    "keywords": [
     "corn",
     "sweet corn"
-   ]
+   ],
+   "nutriScore": "a"
   },
   {
    "id": "bread",
@@ -664,7 +710,8 @@
     "rolls",
     "english muffins",
     "brd"
-   ]
+   ],
+   "nutriScore": "b"
   },
   {
    "id": "tortillas",
@@ -678,7 +725,8 @@
     "wraps",
     "flatbread",
     "pita"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "dough",
@@ -705,7 +753,8 @@
     "ravioli",
     "tortellini",
     "gnocchi"
-   ]
+   ],
+   "nutriScore": "b"
   },
   {
    "id": "pizza",
@@ -716,7 +765,8 @@
    "keywords": [
     "pizza",
     "pizzas"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "prepared_meals",
@@ -778,7 +828,8 @@
     "ranch",
     "vinaigrette",
     "aioli"
-   ]
+   ],
+   "nutriScore": "d"
   },
   {
    "id": "pasta_sauce",
@@ -792,7 +843,8 @@
     "pesto",
     "alfredo",
     "tomato sauce"
-   ]
+   ],
+   "nutriScore": "b"
   },
   {
    "id": "pickles",
@@ -806,7 +858,8 @@
     "olives",
     "sauerkraut",
     "kimchi"
-   ]
+   ],
+   "nutriScore": "c"
   },
   {
    "id": "beverages",

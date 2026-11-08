@@ -7,6 +7,14 @@ nonisolated struct FoodCategory: Codable, Identifiable, Hashable, Sendable {
     var searchTerm: String
     var baselinePrice: Double
     var keywords: [String]
+    /// Typical Nutri-Score (a–e) of a plain product in this category; nil when it varies too much to guess.
+    var nutriScore: String?
+}
+
+/// A Nutri-Score to show: the product's own (from Open Food Facts) or its food type's typical grade.
+nonisolated struct NutriScoreGrade: Equatable, Sendable {
+    var grade: String
+    var isEstimated: Bool
 }
 
 /// Estimates expiry from food category using the bundled `shelf_life.json`
@@ -44,6 +52,14 @@ nonisolated final class ShelfLifeService: Sendable {
     func displayName(for id: String) -> String { byID[id]?.name ?? "Other" }
 
     func fridgeDays(for id: String) -> Int { byID[id]?.fridgeDays ?? defaultDays }
+
+    /// The item's scanned grade, else the typical grade for its category (receipts, card purchases, iMessage).
+    func nutriScore(for item: FridgeItem) -> NutriScoreGrade? {
+        if let grade = item.nutriScore?.lowercased(), "abcde".contains(grade), grade.count == 1 {
+            return NutriScoreGrade(grade: grade, isEstimated: false)
+        }
+        return byID[item.category]?.nutriScore.map { NutriScoreGrade(grade: $0, isEstimated: true) }
+    }
 
     /// Start of the day `fridgeDays` after `date` (expiry is a calendar day, not an instant).
     func estimatedExpiry(categoryID: String, from date: Date = .now, calendar: Calendar = .current) -> Date {

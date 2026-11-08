@@ -13,21 +13,25 @@ from ..fridge.matching import best_catalog_match
 from ..fridge.parse import LineItem
 from ..models import Household
 from ..photon.client import Inbound
-from . import pending
+from . import barcode, pending
 
 log = logging.getLogger("photo")
 
-PHOTO_OFF = ("📸 I can read receipt and fridge photos once photo reading is set up on this server "
+PHOTO_OFF = ("📸 I couldn't find a barcode in that photo. Get close so the barcode fills the frame, in good "
+             "light. Receipt and fridge photos need photo reading set up on this server (LLM_API_KEY); "
+             "until then, scan the receipt in the app.")
+NO_READER = ("📸 I can read receipt and fridge photos once photo reading is set up on this server "
              "(LLM_API_KEY). Until then, text USED / ADD, or scan the receipt in the app.")
 
 
 def render(kind: str, items: list[dict], skipped: list[str] | None = None) -> str:
-    head = "🧾 From your receipt:" if kind == "receipt" else "📸 I can see:"
+    head = {"receipt": "🧾 From your receipt:", "barcode": "🏷️ Scanned:"}.get(kind, "📸 I can see:")
     lines = [head]
     for i, it in enumerate(items, 1):
         qty = f" ×{it['qty']}" if it["qty"] > 1 else ""
         price = f" ${it['total']:,.2f}" if it.get("total") else ""
-        lines.append(f"{i}) {it['emoji']} {it['name']}{qty}{price}")
+        seen = f" ({it['label']})" if it.get("label") else ""
+        lines.append(f"{i}) {it['emoji']} {it['name']}{qty}{price}{seen}")
     if skipped:
         lines.append(f"(Not added: {', '.join(skipped[:4])}{' …' if len(skipped) > 4 else ''})")
     n = len(items)
@@ -37,8 +41,9 @@ def render(kind: str, items: list[dict], skipped: list[str] | None = None) -> st
 
 
 async def handle(ctx: Ctx, hh: Household, m: Inbound) -> str:
-    if ctx.llm is None or not hasattr(ctx.llm, "read_items"):
-        return PHOTO_OFF
+    has_reader = ctx.llm is not None and hasattr(ctx.llm, "read_items")
+    if not has_reader and not barcode.available():
+        return NO_READER
     try:
         meta = await ctx.photon.get_attachment(m.attachment_id)
         ctype = (meta.get("contentType") or "").lower()
@@ -48,6 +53,13 @@ async def handle(ctx: Ctx, hh: Household, m: Inbound) -> str:
     except Exception:
         log.exception("couldn't fetch attachment %s", m.attachment_id)
         return "📸 I couldn't open that photo. Try sending it again?"
+    codes = await barcode.decode(data)
+    if codes:
+        reply = await _from_barcodes(ctx, hh, codes, fall_through=has_reader)
+        if reply:
+            return reply
+    if not has_reader:
+        return PHOTO_OFF
     result = await ctx.llm.read_items(data, ctype)
     if not result or not result.get("items"):
         return "📸 I couldn't find groceries in that photo. A straight-on shot in good light works best."
@@ -77,6 +89,40 @@ async def handle(ctx: Ctx, hh: Household, m: Inbound) -> str:
                        ctx.clock.now(), minutes=6 * 60)
         s.commit()
     return render(kind, items, skipped)
+
+
+async def _from_barcodes(ctx: Ctx, hh: Household, codes: list[str], fall_through: bool) -> str | None:
+    """Ask to add the scanned products. None means no product was found and the LLM reader should try."""
+    found: dict[str, dict] = {}
+    skipped: list[str] = []
+    unknown: list[str] = []
+    for code in codes[:5]:
+        product = await barcode.lookup_product(code)
+        if product is None:
+            unknown.append(code)
+            continue
+        label = barcode.product_label(product) or code
+        info = barcode.catalog_match(product)
+        if info is None:
+            skipped.append(label)
+            continue
+        row = found.setdefault(info.sku, {"sku": info.sku, "name": info.display_name, "emoji": info.emoji,
+                                          "qty": 0, "total": 0.0, "label": label})
+        row["qty"] += 1
+    items = list(found.values())
+    if not items:
+        if skipped:
+            it = "It isn't" if len(skipped) == 1 else "They aren't"
+            return f"🏷️ That's {', '.join(skipped[:3])}. {it} something I track yet, so I didn't add it."
+        if fall_through:
+            return None
+        return (f"🏷️ I read barcode {unknown[0]}, but I couldn't find that product. "
+                "Try scanning it in the app, or send a photo of the receipt.")
+    with Session(ctx.engine) as s:
+        pending.create(s, hh.id, "photo_stock", {"kind": "barcode", "items": items, "skipped": skipped},
+                       ctx.clock.now(), minutes=6 * 60)
+        s.commit()
+    return render("barcode", items, skipped)
 
 
 def drop(payload: dict, n: int) -> tuple[dict, str | None]:

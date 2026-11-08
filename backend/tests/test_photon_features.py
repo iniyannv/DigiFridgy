@@ -145,6 +145,75 @@ def test_photo_without_a_reader_says_so(seeded):
     assert "photo reading" in send_photo(ctx)
 
 
+def barcode_jpeg(code: str = "041220576159") -> bytes:
+    import io
+    import zxingcpp
+    from PIL import Image
+    bars = memoryview(zxingcpp.create_barcode(code, zxingcpp.BarcodeFormat.UPCA).to_image(scale=4))
+    strip = Image.frombuffer("L", (bars.shape[1], bars.shape[0]), bytes(bars), "raw", "L", 0, 1)
+    photo = Image.new("RGB", (strip.width + 200, strip.height + 200), "white")
+    photo.paste(strip, (100, 100))
+    out = io.BytesIO()
+    photo.save(out, "JPEG", quality=85)
+    return out.getvalue()
+
+
+def send_barcode(ctx, monkeypatch, product):
+    from app.brain import barcode
+    seen = []
+
+    async def fake_lookup(code):
+        seen.append(code)
+        return product
+    monkeypatch.setattr(barcode, "lookup_product", fake_lookup)
+    before = len(ctx.photon.outbox)
+    run(handle_raw(ctx, ctx.photon.inject(HANDLE, image=barcode_jpeg(), created_at=BASE)))
+    return ctx.photon.outbox[before:][-1]["text"], seen
+
+
+def test_barcode_photo_adds_the_product_without_an_llm(seeded, monkeypatch):
+    ctx = seeded
+    text(ctx, "hi")
+    assert ctx.llm is None
+    reply, seen = send_barcode(ctx, monkeypatch, {"product_name": "Organic Whole Milk", "brands": "Horizon",
+                                                  "categories_tags_en": ["en:dairies", "en:milks"]})
+    assert seen == ["0041220576159"]
+    assert "Scanned" in reply and "whole milk" in reply
+    assert fresh_names(ctx) == []
+    assert "Added 1 item" in text(ctx, "yes")
+    assert fresh_names(ctx) == ["whole milk"]
+
+
+def test_barcode_falls_back_to_categories(seeded, monkeypatch):
+    ctx = seeded
+    text(ctx, "hi")
+    reply, _ = send_barcode(ctx, monkeypatch, {"product_name": "Kerrygold Pure Irish",
+                                               "categories_tags_en": ["en:dairies", "en:butters"]})
+    assert "butter" in reply and "Add it?" in reply
+
+
+def test_barcode_for_something_untracked_says_so(seeded, monkeypatch):
+    ctx = seeded
+    text(ctx, "hi")
+    reply, _ = send_barcode(ctx, monkeypatch, {"product_name": "Dish Soap", "brands": "Dawn"})
+    assert "Dawn Dish Soap" in reply and "isn't something I track" in reply
+
+
+def test_unknown_barcode_without_an_llm(seeded, monkeypatch):
+    ctx = seeded
+    text(ctx, "hi")
+    reply, _ = send_barcode(ctx, monkeypatch, None)
+    assert "0041220576159" in reply and "couldn't find that product" in reply
+
+
+def test_unknown_barcode_goes_to_the_llm_reader(seeded, monkeypatch):
+    ctx = seeded
+    text(ctx, "hi")
+    ctx.llm = FakeVision("food", [{"name": "eggs", "qty": 1, "price": None}])
+    reply, _ = send_barcode(ctx, monkeypatch, None)
+    assert "I can see" in reply and "eggs" in reply
+
+
 # ---------- tapbacks ----------
 
 def last_agent_message_id(ctx):

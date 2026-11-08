@@ -88,7 +88,14 @@ struct ItemDetailView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 LabeledContent("Added", value: item.addedAt.formatted(date: .abbreviated, time: .omitted))
-                LabeledContent("Source", value: item.source == .barcode ? "Barcode scan" : "Receipt scan")
+                if item.isCardPurchase {
+                    LabeledContent("Bought with card", value: item.store ?? "Card purchase")
+                    if let price = item.price {
+                        LabeledContent("Price", value: "\(price.formatted(.currency(code: "USD"))) each")
+                    }
+                } else {
+                    LabeledContent("Source", value: item.source == .barcode ? "Barcode scan" : "Receipt scan")
+                }
             }
 
             Section("Nutrition") {

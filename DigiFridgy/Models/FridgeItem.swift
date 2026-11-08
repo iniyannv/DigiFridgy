@@ -30,6 +30,9 @@ nonisolated struct FridgeItem: Codable, Identifiable, Hashable, Sendable {
     var nutriScore: String?
     var allergens: [String]
     var recallFlag: RecallFlag?
+    /// Card purchases synced from the bank backend: what one unit cost and where it was bought.
+    var price: Double?
+    var store: String?
 
     init(
         id: String = UUID().uuidString,
@@ -47,7 +50,9 @@ nonisolated struct FridgeItem: Codable, Identifiable, Hashable, Sendable {
         nutrition: Nutrition? = nil,
         nutriScore: String? = nil,
         allergens: [String] = [],
-        recallFlag: RecallFlag? = nil
+        recallFlag: RecallFlag? = nil,
+        price: Double? = nil,
+        store: String? = nil
     ) {
         self.id = id
         self.barcode = barcode
@@ -65,6 +70,8 @@ nonisolated struct FridgeItem: Codable, Identifiable, Hashable, Sendable {
         self.nutriScore = nutriScore
         self.allergens = allergens
         self.recallFlag = recallFlag
+        self.price = price
+        self.store = store
     }
 
     // Tolerant decoding: Firestore documents written by older builds may miss fields.
@@ -86,6 +93,8 @@ nonisolated struct FridgeItem: Codable, Identifiable, Hashable, Sendable {
         nutriScore = try c.decodeIfPresent(String.self, forKey: .nutriScore)
         allergens = try c.decodeIfPresent([String].self, forKey: .allergens) ?? []
         recallFlag = try c.decodeIfPresent(RecallFlag.self, forKey: .recallFlag)
+        price = try c.decodeIfPresent(Double.self, forKey: .price)
+        store = try c.decodeIfPresent(String.self, forKey: .store)
     }
 }
 
@@ -114,6 +123,14 @@ nonisolated extension FridgeItem {
     }
 
     var normalizedBarcode: String? { barcode.map(Barcode.normalize) }
+
+    /// Set by the bank backend for groceries it stocked from a card purchase.
+    static let cardPurchaseAddedBy = "bank-purchase"
+
+    var isCardPurchase: Bool { addedBy == Self.cardPurchaseAddedBy }
+
+    /// What the units still in the fridge cost, when the bank knows the price.
+    var value: Double? { price.map { $0 * Double(count) } }
 }
 
 nonisolated enum Barcode {

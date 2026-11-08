@@ -74,7 +74,11 @@ the app's fridge become one. Code: [`app/spacetime/`](app/spacetime/bridge.py).
   on first sync. Members get its 6-character invite code in their welcome text (or reply **APP**) and
   enter it in the app's **Join** field.
 - To use a household that already exists in the app, text **LINK <code>** with that household's code
-  (in the app under Settings → Household).
+  (in the app under Settings → Household). The app's **Connect your bank** does the same thing:
+  `POST /signup` with `app_invite_code` joins the new (or existing) bank household straight to that
+  app household, and `GET /demo/state?app_household_id=…` returns the bank linked to it.
+- Bank items sent to the app carry `price` (per unit) and `store` (the merchant), with
+  `addedBy: "bank-purchase"` so the app can mark them.
 - Every 3 s (15 s outside DEMO_MODE) the bridge syncs both ways. Bank purchases appear in the app;
   items added in the app show up in FRIDGE, EXPIRING and nudges; USED / TOSSED here and −1 / delete in
   the app update the other side.

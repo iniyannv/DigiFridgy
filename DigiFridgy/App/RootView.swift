@@ -22,13 +22,13 @@ struct RootView: View {
 }
 
 struct MainTabView: View {
+    @Environment(AppState.self) private var app
+    @Environment(BankStore.self) private var bank
+
     var body: some View {
         TabView {
             Tab("Fridge", systemImage: "refrigerator") {
                 InventoryView()
-            }
-            Tab("Bank", systemImage: "building.columns") {
-                BankView()
             }
             Tab("Recipes", systemImage: "fork.knife") {
                 RecipesView()
@@ -41,5 +41,6 @@ struct MainTabView: View {
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
+        .task(id: app.householdId) { await bank.watch(appHouseholdID: app.householdId) }
     }
 }

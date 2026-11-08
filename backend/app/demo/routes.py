@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from ..brain import copy
 from ..db import clear_all
 from ..households import demo_household
-from ..models import Household, Item, Member, PendingAction, ShoppingListItem, WasteEntry
+from ..models import Household, Item, Member, PendingAction, ShoppingListItem, SpacetimeLink, WasteEntry
 from ..nessie.banking import insight, offer_sweep
 from ..nessie.client import running_balance
 from ..nessie.sync import sync_now
@@ -70,8 +70,20 @@ async def buy(request: Request, basket: str = Query("weekly"), household_id: int
     hh = await _demo_hh(ctx, household_id)
     pid = await create_basket_purchase(ctx, hh.checking_account_id, basket)
     processed = await sync_now(ctx)  # don't wait for the 5 s loop
+    await _sync_app(ctx)
     return {"purchase_id": pid, "basket": basket, "processed": processed,
             "simulated": ctx.nessie.is_mock}
+
+
+async def _sync_app(ctx) -> None:
+    """Pushes changes to the app's shared fridge now instead of on the next 3 s round."""
+    if ctx.spacetime is None:
+        return
+    from ..spacetime.bridge import sync_now as sync_app
+    try:
+        await sync_app(ctx)
+    except Exception:  # the background loop retries
+        pass
 
 
 @router.post("/advance")
@@ -139,20 +151,30 @@ async def mock_text(request: Request, body: MockText):
 
 
 @router.get("/state")
-async def state(request: Request, household_id: int | None = None, handle: str | None = None):
+async def state(request: Request, household_id: int | None = None, handle: str | None = None,
+                app_household_id: str | None = None):
+    """`app_household_id` (from the iPhone app) returns only the bank household that shares that
+    app household's fridge, and none if no one has linked a bank to it yet."""
     ctx = _ctx(request)
+    if app_household_id:
+        from ..spacetime.bridge import household_for_app
+        linked = household_for_app(ctx, app_household_id)
+        household_id = linked.id if linked else None
     with Session(ctx.engine) as s:
-        hh = pick_household(s, household_id)
+        hh = (s.get(Household, household_id) if household_id else None) if app_household_id \
+            else pick_household(s, household_id)
         households = [{"id": h.id, "name": h.name} for h in s.exec(select(Household).order_by(Household.id.desc()))]
         if hh and not handle:
             first = s.exec(select(Member).where(Member.household_id == hh.id).order_by(Member.id)).first()
             handle = first.photon_handle if first else None
         handle = handle or "+15555550123"
+        member = s.exec(select(Member).where(Member.photon_handle == handle)).first()
         out = {
             "now_local": ctx.clock.local_now().strftime("%a %b %-d, %-I:%M %p"),
             "offset_days": round(ctx.clock.offset.total_seconds() / 86400, 2),
             "mock_nessie": ctx.nessie.is_mock, "mock_photon": ctx.photon.is_mock, "llm": ctx.llm is not None,
             "household": None, "households": households, "handle": handle,
+            "line": member.assigned_line if member else None,
         }
         if hh:
             fresh = list(s.exec(select(Item).where(Item.household_id == hh.id, Item.status == "fresh")
@@ -160,6 +182,7 @@ async def state(request: Request, household_id: int | None = None, handle: str |
             ins = insight(ctx, s, hh)
             out["household"] = {
                 "id": hh.id, "name": hh.name, "budget": hh.weekly_budget,
+                "app_household_id": _app_household_id(s, hh.id),
                 "members": [m.photon_handle + (f" → texts {m.assigned_line}" if m.assigned_line else "")
                             + ("" if m.status == "active" else " (stopped)")
                             for m in s.exec(select(Member).where(Member.household_id == hh.id))],
@@ -182,3 +205,8 @@ async def state(request: Request, household_id: int | None = None, handle: str |
     if ctx.photon.is_mock:
         out["conversation"] = ctx.photon.conversation(handle)
     return out
+
+
+def _app_household_id(s: Session, household_id: int) -> str | None:
+    link = s.get(SpacetimeLink, household_id)
+    return (link.app_household_id or None) if link else None

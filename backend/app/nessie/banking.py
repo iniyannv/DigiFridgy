@@ -11,6 +11,7 @@ from ..brain import copy, pending
 from ..context import Ctx
 from ..fridge import inventory
 from ..models import Household, ProcessedPurchase
+from .client import running_balance, whole_dollars
 from ..photon.outbound import notify_household
 
 log = logging.getLogger("banking")
@@ -65,12 +66,13 @@ async def offer_sweep(ctx: Ctx, hh: Household, key: str) -> str | None:
     with Session(ctx.engine) as s:
         ins = insight(ctx, s, hh)
         under = round(ins.budget - ins.week_spend, 2)
-        if under < 1:
+        move = float(whole_dollars(under))  # Nessie stores whole dollars
+        if move < 1:
             text = copy.over_budget(ins)
         else:
-            pending.create(s, hh.id, "transfer", {"amount": under, "week": str(ctx.clock.week_start())},
+            pending.create(s, hh.id, "transfer", {"amount": move, "week": str(ctx.clock.week_start())},
                            ctx.clock.now())
-            text = copy.sweep_offer(under)
+            text = copy.sweep_offer(under, move)
         s.commit()
     await notify_household(ctx, hh.id, text, key)
     return text
@@ -78,7 +80,7 @@ async def offer_sweep(ctx: Ctx, hh: Household, key: str) -> str | None:
 
 async def _balance(ctx: Ctx, account_id: str) -> float | None:
     try:
-        return float((await ctx.nessie.get_account(account_id)).get("balance"))
+        return await running_balance(ctx.nessie, account_id)
     except Exception:
         log.warning("balance lookup failed for %s", account_id)
         return None
@@ -89,8 +91,6 @@ async def execute_transfer(ctx: Ctx, hh: Household, action_id: int, amount: floa
     now = ctx.clock.now()
     if not pending.claim_open(ctx.engine, action_id, now):
         return copy.offer_expired()
-    before_c = await _balance(ctx, hh.checking_account_id)
-    before_f = await _balance(ctx, hh.grocery_fund_account_id)
     try:
         await ctx.nessie.create_transfer(hh.checking_account_id, hh.grocery_fund_account_id, amount,
                                          "DigiFridgey weekly grocery budget sweep",
@@ -100,10 +100,6 @@ async def execute_transfer(ctx: Ctx, hh: Household, action_id: int, amount: floa
         pending.finish(ctx.engine, action_id, "failed")
         return copy.transfer_failed()
     pending.finish(ctx.engine, action_id, "done")
-    after_c = await _balance(ctx, hh.checking_account_id)
-    after_f = await _balance(ctx, hh.grocery_fund_account_id)
-    posted = after_c is not None and before_c is not None and abs(after_c - before_c) > 0.004
-    if not posted and before_c is not None and before_f is not None:
-        # Nessie hasn't applied it to balances yet; show the expected result.
-        return copy.transfer_done(amount, before_c - amount, before_f + amount, pending_post=True)
-    return copy.transfer_done(amount, after_c, after_f, pending_post=False)
+    checking = await _balance(ctx, hh.checking_account_id)
+    fund = await _balance(ctx, hh.grocery_fund_account_id)
+    return copy.transfer_done(amount, checking, fund)

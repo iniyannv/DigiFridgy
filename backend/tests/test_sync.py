@@ -46,7 +46,7 @@ def test_non_grocery_purchase_is_ignored_for_items(seeded):
     with Session(ctx.engine) as s:
         assert s.exec(select(Item)).all() == []
         p = s.exec(select(ProcessedPurchase)).one()
-        assert p.is_grocery is False and p.amount == 38.5
+        assert p.is_grocery is False and p.amount == 38  # Nessie keeps whole dollars
     assert not any("Stocked" in t for t in outbox_texts(ctx))
 
 

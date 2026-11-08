@@ -15,6 +15,7 @@ from ..db import clear_all
 from ..households import demo_household
 from ..models import Household, Item, Member, PendingAction, ShoppingListItem, WasteEntry
 from ..nessie.banking import insight, offer_sweep
+from ..nessie.client import running_balance
 from ..nessie.sync import sync_now
 from ..photon.inbound import poll_once
 from ..photon.outbound import reset_salt
@@ -39,9 +40,20 @@ def _ctx(request: Request):
     return request.app.state.ctx
 
 
-async def _demo_hh(ctx) -> Household:
+def pick_household(s: Session, household_id: int | None) -> Household | None:
+    """Explicit ID, else the newest household someone signed up or texted into, else the seeded demo one."""
+    if household_id:
+        return s.get(Household, household_id)
+    newest = s.exec(select(Household).join(Member, Member.household_id == Household.id)
+                    .order_by(Household.id.desc())).first()
+    return newest or demo_household(s)
+
+
+async def _demo_hh(ctx, household_id: int | None = None) -> Household:
     with Session(ctx.engine) as s:
-        hh = demo_household(s)
+        hh = pick_household(s, household_id)
+    if household_id and not hh:
+        raise HTTPException(404, "no such household")
     return hh or await seed(ctx)
 
 
@@ -51,11 +63,11 @@ async def demo_page() -> str:
 
 
 @router.post("/buy")
-async def buy(request: Request, basket: str = Query("weekly")):
+async def buy(request: Request, basket: str = Query("weekly"), household_id: int | None = None):
     ctx = _ctx(request)
     if basket not in DATA["baskets"]:
         raise HTTPException(400, f"unknown basket; choose from {sorted(DATA['baskets'])}")
-    hh = await _demo_hh(ctx)
+    hh = await _demo_hh(ctx, household_id)
     pid = await create_basket_purchase(ctx, hh.checking_account_id, basket)
     processed = await sync_now(ctx)  # don't wait for the 5 s loop
     return {"purchase_id": pid, "basket": basket, "processed": processed,
@@ -73,9 +85,9 @@ async def advance(request: Request, days: float = 0, hours: float = 0):
 
 
 @router.post("/sweep")
-async def sweep(request: Request):
+async def sweep(request: Request, household_id: int | None = None):
     ctx = _ctx(request)
-    hh = await _demo_hh(ctx)
+    hh = await _demo_hh(ctx, household_id)
     text = await offer_sweep(ctx, hh, f"sweep:manual:{ctx.clock.real_now().timestamp():.0f}")
     return {"sent": text}
 
@@ -127,23 +139,29 @@ async def mock_text(request: Request, body: MockText):
 
 
 @router.get("/state")
-async def state(request: Request, handle: str = "+15555550123"):
+async def state(request: Request, household_id: int | None = None, handle: str | None = None):
     ctx = _ctx(request)
     with Session(ctx.engine) as s:
-        hh = demo_household(s)
+        hh = pick_household(s, household_id)
+        households = [{"id": h.id, "name": h.name} for h in s.exec(select(Household).order_by(Household.id.desc()))]
+        if hh and not handle:
+            first = s.exec(select(Member).where(Member.household_id == hh.id).order_by(Member.id)).first()
+            handle = first.photon_handle if first else None
+        handle = handle or "+15555550123"
         out = {
             "now_local": ctx.clock.local_now().strftime("%a %b %-d, %-I:%M %p"),
             "offset_days": round(ctx.clock.offset.total_seconds() / 86400, 2),
             "mock_nessie": ctx.nessie.is_mock, "mock_photon": ctx.photon.is_mock, "llm": ctx.llm is not None,
-            "household": None,
+            "household": None, "households": households, "handle": handle,
         }
         if hh:
             fresh = list(s.exec(select(Item).where(Item.household_id == hh.id, Item.status == "fresh")
                                 .order_by(Item.expires_at)))
             ins = insight(ctx, s, hh)
             out["household"] = {
-                "name": hh.name, "budget": hh.weekly_budget,
-                "members": [m.photon_handle + ("" if m.status == "active" else " (stopped)")
+                "id": hh.id, "name": hh.name, "budget": hh.weekly_budget,
+                "members": [m.photon_handle + (f" → texts {m.assigned_line}" if m.assigned_line else "")
+                            + ("" if m.status == "active" else " (stopped)")
                             for m in s.exec(select(Member).where(Member.household_id == hh.id))],
                 "fridge": [{"name": i.name, "emoji": i.emoji, "expires": copy.day_label(i.expires_at, ctx.clock),
                             "price": i.price} for i in fresh],
@@ -157,8 +175,8 @@ async def state(request: Request, handle: str = "+15555550123"):
                     select(PendingAction).where(PendingAction.household_id == hh.id, PendingAction.status == "open"))],
             }
             try:
-                out["household"]["checking_balance"] = (await ctx.nessie.get_account(hh.checking_account_id))["balance"]
-                out["household"]["fund_balance"] = (await ctx.nessie.get_account(hh.grocery_fund_account_id))["balance"]
+                out["household"]["checking_balance"] = await running_balance(ctx.nessie, hh.checking_account_id)
+                out["household"]["fund_balance"] = await running_balance(ctx.nessie, hh.grocery_fund_account_id)
             except Exception:
                 pass
     if ctx.photon.is_mock:

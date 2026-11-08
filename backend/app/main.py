@@ -18,6 +18,7 @@ from .nessie.sync import sync_loop
 from .photon.inbound import poll_loop
 from .photon.webhook import router as webhook_router
 from .scheduler.jobs import scheduler_loop
+from .signup import router as signup_router
 from .voice.tools import router as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -50,6 +51,7 @@ def create_app(ctx=None) -> FastAPI:
     app = FastAPI(title="DigiFridgey", lifespan=lifespan)
     app.state.ctx = ctx
     app.include_router(webhook_router)
+    app.include_router(signup_router)
     app.include_router(voice_router)
     if ctx.settings.demo_mode:
         app.include_router(demo_router)

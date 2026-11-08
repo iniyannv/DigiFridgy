@@ -49,6 +49,10 @@
   <section>
     <h2>Presenter controls</h2>
     <div class="row">
+      <select id="hh" aria-label="Household"></select>
+      <a href="/signup" target="_blank" style="align-self:center;color:var(--accent)">Sign-up page ↗</a>
+    </div>
+    <div class="row">
       <select id="basket" aria-label="Basket">
         <option value="weekly">Weekly · Avon Fresh Market</option>
         <option value="quick">Quick · Corner Pantry Co.</option>
@@ -80,13 +84,15 @@
     <ul id="list"></ul>
   </section>
   <section id="chatbox" hidden style="grid-column:1/-1">
-    <h2>SIMULATED iMessage (mock Photon)</h2>
+    <h2>SIMULATED iMessage (mock Photon) · <span id="who"></span></h2>
     <div class="chat" id="chat"></div>
     <form id="send"><input id="text" placeholder="Text the fridge, e.g. what's expiring?" autocomplete="off"><button class="primary">Send</button></form>
   </section>
 </main>
 <script>
-const HANDLE = "+15555550123";
+let HANDLE = "+15555550123";
+let HH = "";
+const hhq = () => HH ? "&household_id=" + HH : "";
 const token = new URLSearchParams(location.search).get("token");
 const H = token ? {"x-demo-token": token} : {};
 const $ = (id) => document.getElementById(id);
@@ -104,7 +110,12 @@ async function call(method, path, body) {
 
 async function refresh() {
   try {
-    const s = await call("GET", "/demo/state?handle=" + encodeURIComponent(HANDLE));
+    const s = await call("GET", "/demo/state?x=1" + hhq());
+    HANDLE = s.handle || HANDLE;
+    const sel = $("hh");
+    const opts = (s.households || []).map(h => `<option value="${h.id}">${esc(h.name)}</option>`).join("");
+    if (sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+    if (s.household) sel.value = String(s.household.id);
     $("now").textContent = "App clock: " + s.now_local + (s.offset_days ? ` (+${s.offset_days}d)` : "");
     $("modes").innerHTML = [["Nessie", s.mock_nessie], ["Photon", s.mock_photon]]
       .map(([n, sim]) => `<span class="badge ${sim ? "sim" : ""}">${n}: ${sim ? "SIMULATED" : "live"}</span>`).join(" ")
@@ -123,6 +134,7 @@ async function refresh() {
     }
     if (s.mock_photon) {
       $("chatbox").hidden = false;
+      $("who").textContent = HANDLE;
       const chat = $("chat");
       const atBottom = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 20;
       chat.innerHTML = (s.conversation || []).map(m => `<div class="msg ${m.from}">${esc(m.text)}</div>`).join("");
@@ -137,9 +149,9 @@ document.querySelectorAll("button[data-act]").forEach(btn => btn.addEventListene
   btn.disabled = true;
   try {
     let res;
-    if (act === "buy") res = await call("POST", "/demo/buy?basket=" + $("basket").value);
+    if (act === "buy") res = await call("POST", "/demo/buy?basket=" + $("basket").value + hhq());
     if (act === "advance") res = await call("POST", "/demo/advance?days=" + btn.dataset.days);
-    if (act === "sweep") res = await call("POST", "/demo/sweep");
+    if (act === "sweep") res = await call("POST", "/demo/sweep?x=1" + hhq());
     if (act === "reset") res = await call("POST", "/demo/reset");
     $("log").textContent = act + " → " + JSON.stringify(res);
   } catch (e) { $("log").textContent = act + " failed: " + e.message; }
@@ -155,6 +167,8 @@ $("send").addEventListener("submit", async (e) => {
   try { await call("POST", "/demo/mock/text", {handle: HANDLE, text}); } catch (err) { $("log").textContent = err.message; }
   refresh();
 });
+
+$("hh").addEventListener("change", () => { HH = $("hh").value; refresh(); });
 
 refresh();
 setInterval(refresh, 2000);

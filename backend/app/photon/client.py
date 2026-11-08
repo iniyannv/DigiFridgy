@@ -116,6 +116,30 @@ class PhotonClient:
     async def get_message(self, message_id: str) -> dict:
         return await self._call("GET", f"/v1/projects/{self.project_id}/messages/{message_id}")
 
+    async def list_assignments(self) -> list[dict]:
+        """Active shared-line assignments (needs platforms:read)."""
+        out, token = [], None
+        while True:
+            params = {"pageSize": 100, **({"pageToken": token} if token else {})}
+            page = await self._call("GET", f"/v1/projects/{self.project_id}/platforms/imessage/assignments",
+                                    params=params) or {}
+            out += page.get("assignments", [])
+            token = page.get("nextPageToken")
+            if not isinstance(token, str):
+                return out
+
+    async def assign_line(self, handle: str, idempotency_key: str, first_name: str | None = None,
+                          last_name: str | None = None) -> dict:
+        """Maps a person's phone/email onto a pooled shared iMessage line (needs platforms:write).
+        Returns the assignment, including `assignedPhoneNumber` (the number they should text)."""
+        body = {"handle": handle}
+        if first_name:
+            body["firstName"] = first_name[:100]
+        if last_name:
+            body["lastName"] = last_name[:100]
+        return await self._call("POST", f"/v1/projects/{self.project_id}/platforms/imessage/assignments",
+                                headers={"Idempotency-Key": idempotency_key}, json=body)
+
     async def send_message(self, space_id: str, sender_id: str, text: str, idempotency_key: str,
                            parent_message_id: str | None = None) -> dict:
         body: dict[str, Any] = {"spaceId": space_id, "senderId": sender_id,
@@ -145,6 +169,7 @@ class MockPhotonClient:
         self._users: dict[str, str] = {}
         self._spaces: dict[str, str] = {}
         self._keys: set[str] = set()
+        self.assignments: dict[str, dict] = {}
 
     async def close(self) -> None:
         pass
@@ -169,6 +194,17 @@ class MockPhotonClient:
     async def list_messages(self, created_since: datetime, platform: str = "imessage",
                             page_token: str | None = None) -> tuple[list[dict], str | None]:
         return [m for m in self.inbox if parse_ts(m["createdAt"]) >= created_since], None
+
+    async def list_assignments(self) -> list[dict]:
+        return list(self.assignments.values())
+
+    async def assign_line(self, handle: str, idempotency_key: str, first_name: str | None = None,
+                          last_name: str | None = None) -> dict:
+        if handle not in self.assignments:
+            self.assignments[handle] = {"assignmentId": _pid("asg"), "handle": handle, "platform": "imessage",
+                                        "assignedPhoneNumber": self.agent_handle, "simulated": True}
+            log.info("[SIMULATED Photon] assigned %s to %s", self.agent_handle, handle)
+        return self.assignments[handle]
 
     async def get_message(self, message_id: str) -> dict:
         for m in self.inbox:

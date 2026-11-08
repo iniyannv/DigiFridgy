@@ -32,7 +32,7 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
         hh = await household_for_new_member(ctx, m.sender_handle)
         with Session(ctx.engine) as s:
             member = Member(household_id=hh.id, photon_handle=m.sender_handle, photon_space_id=m.space_id,
-                            agent_user_id=m.agent_id, created_at=ctx.clock.now())
+                            agent_user_id=m.agent_id, welcomed=True, created_at=ctx.clock.now())
             s.add(member)
             s.commit()
             s.refresh(member)
@@ -47,10 +47,16 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
             member.status = "active"
         member.photon_space_id = m.space_id
         member.agent_user_id = m.agent_id
+        first_text = not member.welcomed  # signed up on the web, texting for the first time
+        member.welcomed = True
         s.add(member)
         s.commit()
         s.refresh(member)
         hh = s.get(Household, member.household_id)
+
+    if first_text and intent.name != "stop":
+        await send_reply(ctx, member, m.id, copy.welcome(hh.name, new=True))
+        return
 
     if intent.name == "stop":
         await send_reply(ctx, member, m.id, copy.STOPPED)

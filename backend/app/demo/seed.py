@@ -69,14 +69,24 @@ async def seed(ctx: Ctx, with_history: bool = True):
     from ..nessie.sync import sync_now
 
     gen = generation(ctx)
-    merchants = await ensure_merchants(ctx)
     hh = await provision_household(ctx, DEMO_NAME, "Alex", "Rivera", is_demo=True,
                                    key=f"household:demo{gen}", lookup_by_name=(gen == 0))
+    if with_history:
+        await seed_history(ctx, hh, sync=False)
+    await sync_now(ctx)  # history is older than a day, so it stocks silently
+    return hh
+
+
+async def seed_history(ctx: Ctx, hh, sync: bool = True) -> None:
+    """Two weeks of backdated purchases for one household (once per account)."""
+    from ..nessie.sync import sync_now
+
+    merchants = await ensure_merchants(ctx)
     with Session(ctx.engine) as s:
         done = get_obj(s, f"history:{hh.checking_account_id}")
-    if with_history and not done and await ctx.nessie.list_purchases(hh.checking_account_id):
+    if not done and await ctx.nessie.list_purchases(hh.checking_account_id):
         done = "existing"  # a teammate already seeded this customer in Nessie
-    if with_history and not done:
+    if not done:
         for h in DATA["history"]:
             amount, desc = basket_payload(h)
             pdate = (ctx.clock.today() - timedelta(days=h["days_ago"])).isoformat()
@@ -84,8 +94,8 @@ async def seed(ctx: Ctx, with_history: bool = True):
         with Session(ctx.engine) as s:
             put_obj(s, f"history:{hh.checking_account_id}", "1")
             s.commit()
-    await sync_now(ctx)  # history is older than a day, so it stocks silently
-    return hh
+    if sync:
+        await sync_now(ctx)
 
 
 async def _main() -> None:

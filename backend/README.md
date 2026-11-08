@@ -29,21 +29,47 @@ cd backend && .venv/bin/python -m pytest -q
 ## Going live
 
 1. `cp .env.example .env` and fill in what you have. Any missing key keeps that side mocked.
-2. **Nessie**: set `NESSIE_API_KEY`. Seed the demo household (idempotent):
-   `.venv/bin/python -m app.demo.seed`. It prints the customer and account IDs.
-3. **Photon**: set `PHOTON_API_KEY`, `PHOTON_PROJECT_ID`, `PHOTON_AGENT_HANDLE`. In the Photon
-   dashboard → iMessage, add the phone number **you will text from**, then assign a shared line.
-   ⚠️ A shared line only accepts messages from the sender it was assigned for. Every person who
-   should text the fridge (teammates, judges) needs their own assignment, or use a dedicated line.
-4. Start the server and text the assigned number from that phone. The first message registers
-   you and links you to the demo household.
+2. **Nessie**: set `NESSIE_API_KEY`. Optionally seed the offline demo household:
+   `.venv/bin/python -m app.demo.seed`.
+3. **Photon**: set `PHOTON_API_KEY`, `PHOTON_PROJECT_ID`, `PHOTON_AGENT_HANDLE`. The key needs
+   `project:read`, `project:write`, and **`platforms:read` + `platforms:write`** so sign-up can
+   assign lines.
+4. Start the server and open **`/signup`**. Each person enters their name and iPhone number.
+
+### Sign-up (`/signup`)
+
+Signing up with a phone number:
+- creates that person's household: their own synthetic Nessie customer with Everyday Checking
+  ($1,850) and Grocery Fund ($120), plus two weeks of backdated purchases in DEMO_MODE;
+- asks Photon to assign a shared iMessage line to **that phone number**
+  (`POST /v1/projects/{id}/platforms/imessage/assignments`), which uses one seat on the Photon plan;
+- shows the number to text. Shared lines can't send the first message, so the person texts "hi"
+  and gets the welcome.
+
+Signing up again with the same number returns the same household and line. If Photon can't
+assign a line (missing permission, no seats), the page says why and falls back to
+`PHOTON_AGENT_HANDLE`, which works if that number was added by hand in the Photon dashboard.
+Anyone who texts without signing up joins the demo household (DEMO_MODE) or gets their own.
 
 The startup log says which side is live and which is SIMULATED; so does `/health`.
+
+### What live Nessie actually does
+
+Checked against `prod-api.nessieisreal.com` with a real key:
+- **Whole dollars only:** amounts and balances drop the cents ($42.18 is stored as $42). The
+  app keeps exact grocery totals from the itemized description and offers sweeps in whole dollars.
+- **Balances never change on their own:** purchases, transfers and deposits are stored as
+  records, and `PUT` can't set a balance. The app shows a running balance computed from Nessie's
+  records: opening balance − purchases − transfers out + deposits in.
+- **Transfers have no destination field**, so a sweep is recorded as a transfer out of Everyday
+  Checking plus a matching deposit into Grocery Fund.
+- Merchant `category` is a single string, and empty lists come back as 404.
 
 ## Demo controls (`DEMO_MODE=true`)
 
 | Page button / endpoint | CLI | What it does |
 |---|---|---|
+| Household picker · `?household_id=` on buy/sweep/state | | Defaults to the newest sign-up |
 | Buy · `POST /demo/buy?basket=weekly` | `python -m app.demo.cli buy weekly` | Creates a real Nessie purchase at a fictional merchant; the fridge texts within seconds |
 | +N days · `POST /demo/advance?days=3` | `cli advance 3` | Time-skip: items expire, nudges and waste fire |
 | Budget sweep offer · `POST /demo/sweep` | `cli sweep` | Sends the "Move $X to Grocery Fund?" offer now |
@@ -118,7 +144,6 @@ itemized merchant data shared with the bank.
 
 **API notes.** Photon is called over its REST API (`https://api.photon.codes/v1/projects/{id}/messages`),
 following the official OpenAPI contract and the iMessage quickstart (same fields the
-`photonhq-api` client uses). Nessie paths and fields follow Nessie's official SDK. Both live in
-one small client class each, so a mismatch found against the live API is fixed in one place.
-The Nessie client has not yet been run against a live key: confirm account `balance` and
-purchase `amount` types the first time you seed.
+`photonhq-api` client uses); it hasn't been run against a live Photon key yet. The Nessie client
+was checked against the live API (see above). Each API sits behind one small client class, so a
+mismatch is fixed in one place.

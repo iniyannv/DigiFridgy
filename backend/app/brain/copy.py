@@ -151,9 +151,9 @@ def budget_set(amount: float) -> str:
     return f"✅ Weekly grocery budget set to {usd(amount)}."
 
 
-def sweep_offer(amount: float) -> str:
-    return (f"🏦 You're {usd(amount)} under budget this week.\n"
-            f"Move {usd(amount)} to Grocery Fund? Reply YES or NO.")
+def sweep_offer(under: float, move: float) -> str:
+    return (f"🏦 You're {usd(under)} under budget this week.\n"
+            f"Move {usd(move)} to Grocery Fund? Reply YES or NO.")
 
 
 def over_budget(ins) -> str:
@@ -161,9 +161,8 @@ def over_budget(ins) -> str:
             "Nothing left to move to Grocery Fund this time.")
 
 
-def transfer_done(amount: float, checking: float | None, fund: float | None, pending_post: bool) -> str:
-    tail = " (posting)" if pending_post else ""
-    return (f"✅ Moved {usd(amount)} → Grocery Fund{tail}\n"
+def transfer_done(amount: float, checking: float | None, fund: float | None) -> str:
+    return (f"✅ Moved {usd(amount)} → Grocery Fund\n"
             f"Checking: {usd(checking)} · Grocery Fund: {usd(fund)}")
 
 

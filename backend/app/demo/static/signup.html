@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DigiFridgey Sign Up</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#15181d; --muted:#5d6673; --line:#e2e5ea; --accent:#0b6bcb; --warn:#b54708; --ok:#067647; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1a1d22; --ink:#eef0f3; --muted:#9aa3af; --line:#2a2f37; --accent:#5aa9ff; --warn:#f79009; --ok:#47cd89; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width:440px; margin:0 auto; padding:32px 16px; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  p.lead { color:var(--muted); margin:0 0 24px; }
+  form, .done { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; display:grid; gap:14px; }
+  label { display:grid; gap:6px; font-size:14px; color:var(--muted); }
+  input { font:inherit; padding:12px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); width:100%; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  button, .btn { font:inherit; font-weight:600; padding:12px; border-radius:10px; border:0; background:var(--accent); color:#fff; cursor:pointer; text-align:center; text-decoration:none; display:block; }
+  button:disabled { opacity:.6; cursor:wait; }
+  .err { color:var(--warn); font-size:14px; min-height:1em; }
+  .num { font-size:28px; font-weight:700; letter-spacing:.02em; font-variant-numeric:tabular-nums; }
+  .note { color:var(--muted); font-size:13px; }
+  .badge { display:inline-block; font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--warn); color:var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>🧊 DigiFridgey</h1>
+  <p class="lead">Your bank stocks your fridge. Sign up, then text your fridge on iMessage.</p>
+
+  <form id="form">
+    <div class="two">
+      <label>First name<input name="first_name" required autocomplete="given-name"></label>
+      <label>Last name<input name="last_name" autocomplete="family-name"></label>
+    </div>
+    <label>iPhone number (the one you'll text from)
+      <input name="phone" required inputmode="tel" autocomplete="tel" placeholder="(469) 555-0123">
+    </label>
+    <div class="err" id="err"></div>
+    <button id="go">Create my fridge</button>
+    <p class="note">Uses synthetic demo bank data (Capital One Nessie sandbox), never your real accounts.
+      Money only moves when you text YES. Text STOP anytime.</p>
+  </form>
+
+  <div class="done" id="done" hidden>
+    <div id="sim"></div>
+    <div><strong id="hhname"></strong> is ready.</div>
+    <div id="numbox">
+      <div class="note">Text “hi” from <span id="you"></span> to</div>
+      <div class="num" id="num"></div>
+    </div>
+    <a class="btn" id="sms" href="#">Open Messages</a>
+    <div class="err" id="lineerr"></div>
+    <p class="note">Your fridge can only text you after you send the first message.</p>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const pretty = (n) => { const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(n || ""); return m ? `(${m[1]}) ${m[2]}-${m[3]}` : (n || ""); };
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("err").textContent = "";
+  $("go").disabled = true;
+  const body = Object.fromEntries(new FormData($("form")));
+  try {
+    const r = await fetch("/signup", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Sign-up failed");
+    $("form").hidden = true;
+    $("done").hidden = false;
+    $("hhname").textContent = data.household;
+    $("you").textContent = pretty(data.handle);
+    if (data.simulated) $("sim").innerHTML = '<span class="badge">SIMULATED Photon: no real line assigned</span>';
+    if (data.text_this_number) {
+      $("num").textContent = pretty(data.text_this_number);
+      $("sms").href = "sms:" + data.text_this_number + "&body=hi";
+    } else {
+      $("numbox").hidden = true;
+      $("sms").hidden = true;
+    }
+    if (data.line_error) $("lineerr").textContent = data.line_error;
+  } catch (err) {
+    $("err").textContent = err.message;
+  }
+  $("go").disabled = false;
+});
+</script>
+</body>
+</html>

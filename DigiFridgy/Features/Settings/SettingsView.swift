@@ -14,6 +14,7 @@ struct SettingsView: View {
             Form {
                 accountSection
                 householdSection
+                BankSettingsSection()
                 allergenSection
 
                 Section {
@@ -41,6 +42,7 @@ struct SettingsView: View {
 
                 checksSection
                 demoSection
+                BankDemoSection()
                 statusSection
 
                 Section {

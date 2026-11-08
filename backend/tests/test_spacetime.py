@@ -193,3 +193,47 @@ def test_app_category_mapping():
     assert bridge.app_category("baby spinach") == "leafy_greens"
     assert bridge.app_category("blueberry greek yogurt") == "yogurt"
     assert bridge.app_category("mystery thing") == "other"
+
+
+def test_bank_items_carry_store_and_price(shared):
+    ctx = shared
+    buy_weekly(ctx)
+    run(bridge.sync_now(ctx))
+    items = ctx.spacetime.app_items(app_user(ctx))
+    milk = next(i for i in items.values() if "milk" in i["name"].lower())
+    assert milk["addedBy"] == "bank-purchase" and milk["source"] == "receipt"
+    assert milk["store"] and milk["price"] > 0
+
+
+def test_signup_from_the_app_joins_its_household(ctx):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    ctx.spacetime = MockSpacetimeClient()
+    _, token = run(ctx.spacetime.create_identity())
+    run(ctx.spacetime.call(token, "create_household", [str(uuid.uuid4()), "Apartment 4B"]))
+    app_hh = run(ctx.spacetime.query(token, "SELECT * FROM my_household"))[0]
+    c = TestClient(create_app(ctx))
+    # Nobody linked a bank to this app household yet.
+    assert c.get("/demo/state", params={"app_household_id": app_hh["id"]}).json()["household"] is None
+
+    r = c.post("/signup", json={"first_name": "Maya", "phone": "(469) 555-0123",
+                                "app_invite_code": app_hh["invite_code"].lower()}).json()
+    assert r["app_linked"] is True
+    st = c.get("/demo/state", params={"app_household_id": app_hh["id"]}).json()
+    assert st["household"]["id"] == r["household_id"]
+    assert st["household"]["app_household_id"] == app_hh["id"]
+    assert st["handle"] == "+14695550123" and st["line"] == ctx.photon.agent_handle
+
+    # A card purchase lands in the app household straight away.
+    c.post("/demo/buy", params={"basket": "quick", "household_id": r["household_id"]})
+    assert ctx.spacetime.app_items(token)
+    assert bridge.invite_code(ctx, r["household_id"]) == app_hh["invite_code"]
+
+
+def test_signup_with_a_bad_app_code_still_signs_up(ctx):
+    ctx.spacetime = MockSpacetimeClient()
+    from app.signup import sign_up
+    r = run(sign_up(ctx, "Maya", None, "4695550123", app_invite_code="ZZZZZZ"))
+    assert r.app_linked is False and "Couldn't find" in r.app_link_message
+    assert r.household.id

@@ -15,9 +15,14 @@ through Photon: stock alerts, expiry nudges, food-waste dollars, and a YES-confi
 into a Grocery Fund account. It runs offline with labeled mocks; see its README.
 
 It shares the app's fridge through SpacetimeDB: bank purchases appear in the app, items scanned in
-the app show up over iMessage, and "used" / "tossed" on either side updates the other. Text **APP**
-for the invite code to enter in the app's Join field, or **LINK <code>** to attach to a household
-that already exists in the app.
+the app show up over iMessage, and "used" / "tossed" on either side updates the other.
+
+In the app, the bank is part of the household rather than a tab of its own: **Connect your bank**
+(on the Fridge tab or in Settings → Bank & iMessage) signs up a phone number and joins the bank to
+the current household. Card purchases then land in the fridge with their store and price (marked
+with a card icon), a weekly budget card sits under the fridge summary, and Settings → Bank demo has
+the buy / time-skip / sweep controls. Over iMessage, text **APP** for the invite code, or
+**LINK <code>** to attach to a household that already exists in the app.
 
 ## Quick start (offline demo, no setup)
 

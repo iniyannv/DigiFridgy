@@ -11,7 +11,7 @@ from ..context import Ctx
 from ..fridge import inventory
 from ..fridge.matching import best_catalog_match, category_for, match_items
 from ..households import household_for_new_member, member_by_handle
-from ..models import Household, Item, Member, ShoppingListItem
+from ..models import Household, Item, Member, ProcessedPurchase, ShoppingListItem
 from ..photon.client import Inbound
 from ..photon.outbound import send_reply
 from . import copy, pending
@@ -283,6 +283,20 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool) -> str:
                 s.commit()
                 return copy.still_have_it(item.name)
             return _apply(ctx, s, hh.id, [item], "used")
+        elif kind == "stock":
+            from .. import card
+            purchase_id = p["purchase_id"]
+            record = s.get(ProcessedPurchase, purchase_id)
+            if not yes:
+                left = card.skip_rest(s, hh, purchase_id, now)
+                s.commit()
+                return copy.stock_declined(left)
+            fresh = card.stock_lines(ctx, s, hh, purchase_id)
+            s.commit()
+            if not fresh:
+                return "✅ Those items are already in your fridge."
+            return copy.stocked(record.merchant_name if record else "the store",
+                                sum(i.price for i in fresh), fresh, ctx.clock)
         elif kind == "add_suggestions":
             pending.set_status(s, a, "done" if yes else "declined")
             rows = [r for r in (s.get(ShoppingListItem, i) for i in p["ids"]) if r and not r.done]

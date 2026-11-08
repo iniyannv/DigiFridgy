@@ -28,7 +28,7 @@ from sqlmodel import Session, select
 from ..config import BACKEND_DIR
 from ..context import Ctx
 from ..fridge.shelf_life import find_by_words, lookup
-from ..models import Household, Item, SpaceItemLink, SpaceSyncState, SpacetimeLink
+from ..models import Household, Item, ProcessedPurchase, SpaceItemLink, SpaceSyncState, SpacetimeLink
 from ..photon.outbound import notify_household
 
 log = logging.getLogger("spacetime")
@@ -101,15 +101,31 @@ def _from_ms(ctx: Ctx, ms: float) -> datetime:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).replace(tzinfo=None) + ctx.clock.offset
 
 
-def _app_item_json(ctx: Ctx, external_id: str, unit: Item, count: int) -> str:
+def _app_item_json(ctx: Ctx, external_id: str, unit: Item, count: int, store: str | None = None) -> str:
     category = app_category(unit.name)
     name = unit.name[:1].upper() + unit.name[1:]
-    return json.dumps({
+    data = {
         "id": external_id, "name": name, "category": category, "count": count,
-        "addedAt": _to_ms(ctx, unit.purchased_at), "addedBy": "bank-purchase",
+        "addedAt": _to_ms(ctx, unit.purchased_at), "addedBy": BANK_ADDED_BY,
         "expiresAt": _to_ms(ctx, unit.expires_at), "expiryIsEstimated": True,
+        # "receipt" so app builds without a "bank" source still decode it; addedBy marks card purchases.
         "source": "receipt", "allergens": _IMPLIED_ALLERGENS.get(category, []),
-    })
+    }
+    if unit.source_purchase_id:
+        data["price"] = round(unit.price, 2)
+        if store:
+            data["store"] = store
+    return json.dumps(data)
+
+
+BANK_ADDED_BY = "bank-purchase"
+
+
+def _store_name(s: Session, unit: Item) -> str | None:
+    if not unit.source_purchase_id:
+        return None
+    p = s.get(ProcessedPurchase, unit.source_purchase_id)
+    return (p.merchant_name or None) if p else None
 
 
 def _external_id(app_household_id: str, unit: Item) -> str:
@@ -162,24 +178,36 @@ def invite_code(ctx: Ctx, household_id: int) -> str | None:
 
 async def link_to_code(ctx: Ctx, hh: Household, code: str) -> str:
     """Moves this backend household into an existing app household (from the app's invite code)."""
+    return (await join_app_household(ctx, hh, code))[1]
+
+
+async def join_app_household(ctx: Ctx, hh: Household, code: str) -> tuple[bool, str]:
+    """Like `link_to_code`, but also says whether it worked. A household that was never linked
+    joins directly, so it doesn't create (and announce) an app household of its own first."""
     if ctx.spacetime is None:
-        return "The app connection isn't set up on this server."
+        return False, "The app connection isn't set up on this server."
     code = code.strip().upper()
     async with _lock:
-        link = await ensure_link(ctx, hh)
-        if code == link.invite_code:
-            return f"Already linked to that app household ({code})."
+        with Session(ctx.engine) as s:
+            link = s.get(SpacetimeLink, hh.id)
+        if link is None:
+            identity, token = await ctx.spacetime.create_identity()
+            link = SpacetimeLink(household_id=hh.id, identity=identity, token=token,
+                                 linked_at=ctx.clock.real_now())
+        elif link.app_household_id and code == link.invite_code:
+            return True, f"Already linked to that app household ({code})."
         try:
-            await ctx.spacetime.call(link.token, "leave_household", [])
+            if link.app_household_id:
+                await ctx.spacetime.call(link.token, "leave_household", [])
             await ctx.spacetime.call(link.token, "join_household", [code])
         except Exception as e:
-            # Leaving succeeded but joining failed: go back to a household of our own.
+            # Joining failed: the next sync gives this household an app household of its own.
             log.warning("link to %s failed: %s", code, e)
             link.app_household_id = ""
             with Session(ctx.engine) as s:
                 s.merge(link)
                 s.commit()
-            return f"Couldn't find an app household with code {code}. Check the code in the app's Settings."
+            return False, f"Couldn't find an app household with code {code}. Check the code in the app's Settings."
         with Session(ctx.engine) as s:
             for row in s.exec(select(SpaceSyncState).where(SpaceSyncState.household_id == hh.id)):
                 s.delete(row)
@@ -188,7 +216,15 @@ async def link_to_code(ctx: Ctx, hh: Household, code: str) -> str:
             s.commit()
         await _refresh_household(ctx, link)
         await sync_household(ctx, hh)
-    return f"🔗 Linked! This fridge now shares items with the app household using code {code}."
+    return True, f"🔗 Linked! This fridge now shares items with the app household using code {code}."
+
+
+def household_for_app(ctx: Ctx, app_household_id: str) -> Household | None:
+    """The backend (bank) household that shares this app household's fridge, if any."""
+    with Session(ctx.engine) as s:
+        link = s.exec(select(SpacetimeLink).where(SpacetimeLink.app_household_id == app_household_id)
+                      .order_by(SpacetimeLink.linked_at.desc())).first()
+        return s.get(Household, link.household_id) if link else None
 
 
 # ---------- sync ----------
@@ -264,8 +300,8 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
             # App side (network calls run after the local commit)
             template = units[0] if units else (s.get(Item, all_links[ext]) if ext in all_links else None)
             if data is None and new > 0 and template is not None:
-                sample = template
-                app_calls.append(("upsert_item", [ext, new, _app_item_json(ctx, ext, sample, new)], ext, new))
+                item_json = _app_item_json(ctx, ext, template, new, _store_name(s, template))
+                app_calls.append(("upsert_item", [ext, new, item_json], ext, new))
                 stats["exported"] += 1
             elif data is not None and new != app_count:
                 if new == 0:

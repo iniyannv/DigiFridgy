@@ -1,8 +1,9 @@
 import Foundation
 import Observation
 
-// Talks to the DigiFridgey backend (backend/ folder): phone sign-up, the
-// bank-stocked fridge, Nessie balances, and the demo controls.
+// Talks to the DigiFridgey backend (backend/ folder). The bank is part of the app's household: signing
+// up passes the household's invite code, so card purchases stock this same fridge (through SpacetimeDB)
+// and every member of the household sees the same budget.
 
 nonisolated struct BankSignupResponse: Decodable, Sendable {
     var household: String
@@ -12,13 +13,8 @@ nonisolated struct BankSignupResponse: Decodable, Sendable {
     var line_error: String?
     var simulated: Bool
     var existing: Bool
-}
-
-nonisolated struct BankFridgeItem: Decodable, Sendable, Hashable {
-    var name: String
-    var emoji: String
-    var expires: String
-    var price: Double
+    var app_linked: Bool?
+    var app_link_message: String?
 }
 
 nonisolated struct BankHousehold: Decodable, Sendable {
@@ -26,13 +22,12 @@ nonisolated struct BankHousehold: Decodable, Sendable {
     var name: String
     var budget: Double
     var members: [String]
-    var fridge: [BankFridgeItem]
-    var list: [String]
     var waste_total: Double
     var week_spend: Double
     var week_waste: Double
     var checking_balance: Double?
     var fund_balance: Double?
+    var app_household_id: String?
 }
 
 nonisolated struct BankState: Decodable, Sendable {
@@ -41,7 +36,35 @@ nonisolated struct BankState: Decodable, Sendable {
     var mock_nessie: Bool
     var mock_photon: Bool
     var household: BankHousehold?
+    var handle: String?
+    var line: String?
 }
+
+nonisolated struct CardLine: Decodable, Sendable, Identifiable, Hashable {
+    var index: Int
+    var sku: String
+    var name: String
+    var emoji: String
+    var qty: Int
+    var total: Double
+    var shelf_life_days: Int
+    var status: String  // pending | stocked | skipped
+    var id: Int { index }
+    var isAdded: Bool { status == "stocked" }
+}
+
+nonisolated struct CardPurchase: Decodable, Sendable, Identifiable {
+    var purchase_id: String
+    var merchant: String
+    var date: String
+    var amount: Double
+    var lines: [CardLine]
+    var id: String { purchase_id }
+    var pendingCount: Int { lines.filter { $0.status != "stocked" }.count }
+}
+
+nonisolated struct CardPurchaseList: Decodable, Sendable { var purchases: [CardPurchase] }
+nonisolated struct CardStockResult: Decodable, Sendable { var added: Int; var names: [String] }
 
 nonisolated struct BankActionResult: Decodable, Sendable {
     var processed: Int?
@@ -67,12 +90,20 @@ nonisolated struct BankBasket: Identifiable, Hashable, Sendable {
 
 @Observable
 final class BankStore {
+    enum Status: Equatable {
+        /// Haven't heard from the server yet.
+        case unknown
+        /// Server unreachable or misconfigured. Bank features stay out of the way.
+        case offline(String)
+        /// Server is up, but no one in this household has connected a bank.
+        case notLinked
+        case linked
+    }
+
     private enum Keys {
         static let server = "bank.serverURL"
-        static let householdID = "bank.householdID"
-        static let handle = "bank.handle"
-        static let line = "bank.line"
-        static let name = "bank.householdName"
+        /// From the old standalone Bank tab, which kept its own household.
+        static let legacy = ["bank.householdID", "bank.handle", "bank.line", "bank.householdName"]
     }
 
     /// Build setting DIGIFRIDGEY_SERVER (via Info.plist) lets a device build point at the Mac,
@@ -88,24 +119,22 @@ final class BankStore {
     private var authHeaders: [String: String] { Self.token.isEmpty ? [:] : ["X-Demo-Token": Self.token] }
 
     var serverURL: String { didSet { UserDefaults.standard.set(serverURL, forKey: Keys.server) } }
-    private(set) var householdID: Int?
-    private(set) var handle: String?
-    private(set) var line: String?
-    private(set) var householdName: String?
 
-    var state: BankState?
-    var lastError: String?
+    /// The app household (SpacetimeDB id) the bank is looked up by.
+    private(set) var appHouseholdID: String?
+    private(set) var status: Status = .unknown
+    private(set) var state: BankState?
     var isBusy = false
 
-    var isLinked: Bool { householdID != nil }
+    var household: BankHousehold? { status == .linked ? state?.household : nil }
+    var isLinked: Bool { household != nil }
+    var handle: String? { state?.handle }
+    var line: String? { state?.line }
 
     init() {
         let d = UserDefaults.standard
         serverURL = d.string(forKey: Keys.server) ?? Self.defaultServer
-        householdID = d.object(forKey: Keys.householdID) as? Int
-        handle = d.string(forKey: Keys.handle)
-        line = d.string(forKey: Keys.line)
-        householdName = d.string(forKey: Keys.name)
+        Keys.legacy.forEach(d.removeObject(forKey:))
     }
 
     // MARK: - Requests
@@ -132,103 +161,151 @@ final class BankStore {
         return try await APIClient.shared.send(request, as: type)
     }
 
-    private var householdQuery: [(String, String)] {
-        householdID.map { [("household_id", String($0))] } ?? []
+    private var bankQuery: [(String, String)] {
+        household.map { [("household_id", String($0.id))] } ?? []
     }
 
     /// Turns the backend's {"detail": "..."} errors into a readable sentence.
     private func message(for error: Error) -> String {
+        if case APIError.badStatus(401, _) = error {
+            return "The server at \(serverURL) needs an access token. Set DIGIFRIDGEY_TOKEN to the server's DEMO_TOKEN and rebuild."
+        }
         if case APIError.badStatus(_, let body) = error,
            let data = body.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let detail = json["detail"] as? String {
             return detail
         }
-        if (error as? URLError)?.code == .cannotConnectToHost || (error as? URLError)?.code == .timedOut {
+        if let code = (error as? URLError)?.code, [.cannotConnectToHost, .timedOut, .cannotFindHost].contains(code) {
             return "Can't reach the DigiFridgey server at \(serverURL). Is it running?"
         }
         return error.localizedDescription
     }
 
-    // MARK: - Actions
+    // MARK: - Household
 
-    func signUp(firstName: String, lastName: String, phone: String) async -> BankSignupResponse? {
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            var body = ["first_name": firstName, "phone": phone]
-            if !lastName.isEmpty { body["last_name"] = lastName }
-            let r = try await post("/signup", body: body, as: BankSignupResponse.self)
-            householdID = r.household_id
-            handle = r.handle
-            line = r.text_this_number
-            householdName = r.household
-            let d = UserDefaults.standard
-            d.set(r.household_id, forKey: Keys.householdID)
-            d.set(r.handle, forKey: Keys.handle)
-            d.set(r.text_this_number, forKey: Keys.line)
-            d.set(r.household, forKey: Keys.name)
-            lastError = nil
-            await refresh()
-            return r
-        } catch {
-            lastError = message(for: error)
-            return nil
+    /// Keeps the bank in step with the app's household while the app is open.
+    func watch(appHouseholdID: String?) async {
+        if appHouseholdID != self.appHouseholdID {
+            self.appHouseholdID = appHouseholdID
+            state = nil
+            status = .unknown
         }
-    }
-
-    func unlink() {
-        householdID = nil
-        handle = nil
-        line = nil
-        householdName = nil
-        state = nil
-        for key in [Keys.householdID, Keys.handle, Keys.line, Keys.name] {
-            UserDefaults.standard.removeObject(forKey: key)
+        guard appHouseholdID != nil else { return }
+        while !Task.isCancelled {
+            await refresh()
+            // Linked: keep balances live. Otherwise check now and then whether someone linked by text.
+            try? await Task.sleep(for: .seconds(status == .linked ? 4 : 15))
         }
     }
 
     func refresh() async {
-        guard isLinked else { return }
+        guard let appHouseholdID else { return }
         do {
-            state = try await APIClient.shared.get(BankState.self, from: try url("/demo/state", householdQuery),
-                                                   headers: authHeaders)
-            lastError = nil
+            let s = try await APIClient.shared.get(
+                BankState.self, from: try url("/demo/state", [("app_household_id", appHouseholdID)]),
+                headers: authHeaders)
+            guard appHouseholdID == self.appHouseholdID else { return }
+            state = s
+            status = s.household == nil ? .notLinked : .linked
+        } catch is CancellationError {
         } catch {
-            lastError = message(for: error)
+            if (error as? URLError)?.code == .cancelled { return }
+            status = .offline(message(for: error))
         }
     }
 
-    /// Creates a real Nessie purchase; the backend stocks the fridge and texts you.
-    func buy(_ basket: BankBasket) async -> String? {
-        await run { try await self.post("/demo/buy", query: [("basket", basket.id)] + self.householdQuery,
-                                         as: BankActionResult.self) }
-            .map { _ in "Bought \(basket.title.lowercased()) at \(basket.store). Check your texts." }
+    // MARK: - Actions
+
+    /// Creates the bank household, gives it an iMessage line and makes it share this app household's fridge.
+    /// Returns a sentence for a toast, or throws a readable error.
+    func connect(firstName: String, lastName: String, phone: String, inviteCode: String) async throws -> String {
+        isBusy = true
+        defer { isBusy = false }
+        var body = ["first_name": firstName, "phone": phone, "app_invite_code": inviteCode]
+        if !lastName.isEmpty { body["last_name"] = lastName }
+        let r: BankSignupResponse
+        do {
+            r = try await post("/signup", body: body, as: BankSignupResponse.self)
+        } catch {
+            throw BankError(message: message(for: error))
+        }
+        await refresh()
+        if r.app_linked == false {
+            throw BankError(message: r.app_link_message ?? "The bank account was created but couldn't join this fridge.")
+        }
+        let line = PhoneFormat.pretty(r.text_this_number)
+        return line.isEmpty ? "Bank connected." : "Bank connected. Text hi to \(line) to start iMessage alerts."
     }
 
-    func advance(days: Int) async -> String? {
-        await run { try await self.post("/demo/advance", query: [("days", String(days))], as: BankActionResult.self) }
-            .map { r in "Skipped \(days) day\(days == 1 ? "" : "s"). \(r.expired ?? 0) expired, \(r.nudged ?? 0) nudged." }
+    /// Creates a real Nessie purchase; the backend texts you to confirm what goes in the fridge.
+    func buy(_ basket: BankBasket) async throws -> String {
+        _ = try await run { try await self.post("/demo/buy", query: [("basket", basket.id)] + self.bankQuery,
+                                                 as: BankActionResult.self) }
+        return basket.id == "fuel"
+            ? "Bought gas at \(basket.store). Not groceries, so the fridge stays the same."
+            : "Bought \(basket.title.lowercased()) at \(basket.store). Reply YES to the text, or add items from + → Add from card."
     }
 
-    func sweep() async -> String? {
-        await run { try await self.post("/demo/sweep", query: self.householdQuery, as: BankActionResult.self) }
-            .map { _ in "Budget sweep offer sent. Reply YES by text to move the money." }
+    func advance(days: Int) async throws -> String {
+        let r = try await run { try await self.post("/demo/advance", query: [("days", String(days))],
+                                                     as: BankActionResult.self) }
+        return "Skipped \(days) day\(days == 1 ? "" : "s"). \(r.expired ?? 0) expired, \(r.nudged ?? 0) nudged."
     }
 
-    private func run(_ work: @escaping () async throws -> BankActionResult) async -> BankActionResult? {
+    func sweep() async throws -> String {
+        _ = try await run { try await self.post("/demo/sweep", query: self.bankQuery, as: BankActionResult.self) }
+        return "Budget sweep offer sent. Reply YES by text to move the money."
+    }
+
+    // MARK: - Add from card
+
+    /// Recent grocery card purchases with their products (from the bank transaction).
+    func cardPurchases() async throws -> [CardPurchase] {
+        do {
+            return try await APIClient.shared.get(CardPurchaseList.self, from: try url("/demo/purchases", bankQuery),
+                                                  headers: authHeaders).purchases
+        } catch {
+            throw BankError(message: message(for: error))
+        }
+    }
+
+    /// Adds the chosen lines to the shared fridge; the backend pushes them to the app right away.
+    func addFromCard(_ purchase: CardPurchase, lines: Set<Int>) async throws -> String {
+        isBusy = true
+        defer { isBusy = false }
+        var request = URLRequest(url: try url("/demo/purchases/\(purchase.purchase_id)/stock", bankQuery))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        authHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["lines": Array(lines).sorted()])
+        do {
+            let r = try await APIClient.shared.send(request, as: CardStockResult.self)
+            await refresh()
+            return r.added == 0 ? "Those items are already in your fridge."
+                : "Added \(r.added) item\(r.added == 1 ? "" : "s") from \(purchase.merchant)."
+        } catch {
+            throw BankError(message: message(for: error))
+        }
+    }
+
+    private func run(_ work: @escaping () async throws -> BankActionResult) async throws -> BankActionResult {
         isBusy = true
         defer { isBusy = false }
         do {
             let r = try await work()
-            lastError = nil
             await refresh()
             return r
         } catch {
-            lastError = message(for: error)
-            return nil
+            throw BankError(message: message(for: error))
         }
     }
+}
+
+struct BankError: LocalizedError {
+    var message: String
+    var errorDescription: String? { message }
 }
 
 enum PhoneFormat {

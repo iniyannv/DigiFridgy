@@ -8,6 +8,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from .. import card
 from ..brain import copy
 from ..context import Ctx
 from ..fridge import inventory
@@ -89,14 +90,22 @@ async def process_purchase(ctx: Ctx, hh: Household, p: dict) -> bool:
         except IntegrityError:
             s.rollback()
             return False
-        items = []
+        items, text = [], None
+        name = merchant.get("name", "the store")
         if parsed and parsed.items:
-            # Today's purchase is "now"; older ones are placed mid-day on their date.
-            purchased_at = now if pdate >= today else ctx.clock.local_to_utc(datetime.combine(pdate, time(12)))
-            items = inventory.stock_items(s, hh.id, parsed.items, purchased_at, p["_id"], now)
+            if recent and not ctx.settings.auto_stock:
+                # Like a scanned receipt: the person decides what goes in (YES, or Add from card in the app).
+                card.record_lines(s, hh.id, p["_id"], parsed.items, "pending", now)
+                text = card.ask(s, ctx, hh.id, p["_id"], name, record.amount, parsed.items)
+            else:
+                # Today's purchase is "now"; older ones are placed mid-day on their date.
+                purchased_at = now if pdate >= today else ctx.clock.local_to_utc(datetime.combine(pdate, time(12)))
+                items = inventory.stock_items(s, hh.id, parsed.items, purchased_at, p["_id"], now)
+                card.record_lines(s, hh.id, p["_id"], parsed.items, "stocked", now)
         s.commit()
         fresh = [i for i in items if i.status == "fresh"]
-        text = copy.stocked(merchant.get("name", "the store"), record.amount, fresh, ctx.clock) if fresh else None
+        if fresh:
+            text = copy.stocked(name, record.amount, fresh, ctx.clock)
 
     if text and recent:
         await notify_household(ctx, hh.id, text, f"stock:{p['_id']}")

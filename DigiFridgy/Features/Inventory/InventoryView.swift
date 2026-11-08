@@ -2,6 +2,9 @@ import SwiftUI
 
 struct InventoryView: View {
     @Environment(AppState.self) private var app
+    @Environment(BankStore.self) private var bank
+    @State private var showConnectBank = false
+    @State private var showCardPurchases = false
     @State private var showBarcodeScanner = false
     @State private var showReceiptScanner = false
     @State private var search = ""
@@ -45,6 +48,11 @@ struct InventoryView: View {
                     Menu {
                         Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
                         Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
+                        if bank.isLinked {
+                            Button("Add from card", systemImage: "creditcard") { showCardPurchases = true }
+                        } else if bank.status == .notLinked {
+                            Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
+                        }
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -53,6 +61,8 @@ struct InventoryView: View {
             }
             .sheet(isPresented: $showBarcodeScanner) { BarcodeScanSheet() }
             .sheet(isPresented: $showReceiptScanner) { ReceiptScanSheet() }
+            .sheet(isPresented: $showConnectBank) { ConnectBankSheet() }
+            .sheet(isPresented: $showCardPurchases) { AddFromCardSheet() }
         }
     }
 
@@ -63,6 +73,9 @@ struct InventoryView: View {
                     FridgeSummaryCard()
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
+                }
+                if bank.isLinked || bank.status == .notLinked {
+                    Section { BankBudgetCard() }
                 }
             }
 
@@ -92,7 +105,7 @@ struct InventoryView: View {
             ]
             ForEach(groups, id: \.0) { title, items in
                 if !items.isEmpty {
-                    Section(title) {
+                    Section {
                         ForEach(items) { item in
                             NavigationLink(value: item.id) { InventoryRow(item: item) }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -117,6 +130,14 @@ struct InventoryView: View {
                                     .tint(.green)
                                 }
                         }
+                    } header: {
+                        Text(title)
+                    } footer: {
+                        // Bank purchases know their price, so expired food has a dollar figure.
+                        let lost = items.filter { $0.urgency() == .expired }.compactMap(\.value).reduce(0, +)
+                        if lost > 0 {
+                            Text("\(lost.formatted(.currency(code: "USD"))) of groceries expired. Toss or use them so your budget stays accurate.")
+                        }
                     }
                 }
             }
@@ -129,12 +150,18 @@ struct InventoryView: View {
         ContentUnavailableView {
             Label("Your fridge is empty", systemImage: "refrigerator")
         } description: {
-            Text("Scan a barcode or a grocery receipt to start tracking what you have and when it expires.")
+            Text(bank.isLinked
+                 ? "Scan a barcode or a receipt, or buy groceries with your card, to start tracking what you have and when it expires."
+                 : "Scan a barcode or a grocery receipt to start tracking what you have and when it expires.")
         } actions: {
             Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
                 .buttonStyle(.glassProminent)
             Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
                 .buttonStyle(.glass)
+            if bank.status == .notLinked {
+                Button("Connect your bank", systemImage: "building.columns") { showConnectBank = true }
+                    .buttonStyle(.glass)
+            }
             if app.services.isMock {
                 Button("Load demo items") { Task { await app.seedDemoHousehold() } }
                     .font(.footnote)
@@ -180,6 +207,10 @@ struct InventoryRow: View {
                     if !item.allergenHits(for: app.userAllergens).isEmpty {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                             .accessibilityLabel("Contains your allergen")
+                    }
+                    if item.isCardPurchase {
+                        Image(systemName: "creditcard.fill").font(.caption).foregroundStyle(.secondary)
+                            .accessibilityLabel("Bought with your card")
                     }
                 }
                 ExpiryLabel(item: item)

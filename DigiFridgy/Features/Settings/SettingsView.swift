@@ -5,7 +5,7 @@ struct SettingsView: View {
     @Environment(AppState.self) private var app
     @State private var showLinkEmail = false
     @State private var confirmLeave = false
-    @State private var confirmGuestSignOut = false
+    @State private var confirmSignOut = false
     @State private var mockMode = UserDefaults.standard.bool(forKey: AppServices.mockDefaultsKey)
     @State private var radius: Double = 10
     @State private var checksResult: String?
@@ -83,18 +83,30 @@ struct SettingsView: View {
             }
             Button("Sign out", role: .destructive) {
                 // A guest identity lives only on this phone: signing out deletes it for good.
-                if app.user?.isAnonymous ?? false { confirmGuestSignOut = true } else { app.signOut() }
+                if app.user?.isAnonymous ?? false { confirmSignOut = true } else { app.signOut() }
             }
-            .confirmationDialog("Sign out of this guest account?", isPresented: $confirmGuestSignOut,
+            .confirmationDialog("Sign out of this guest account?", isPresented: $confirmSignOut,
                                 titleVisibility: .visible) {
                 if app.services.auth.supportsEmail {
                     Button("Save account with email first") { showLinkEmail = true }
                 }
-                Button("Sign out anyway", role: .destructive) { app.signOut() }
+                Button(signOutLosesHousehold ? "Sign out and lose this fridge" : "Sign out anyway", role: .destructive) {
+                    app.signOut()
+                }
             } message: {
-                Text("Guest accounts can't sign back in. You'll lose access to \(app.household?.name ?? "this household") unless someone invites you again.")
+                if signOutLosesHousehold {
+                    Text("You're the only member of \(app.household?.name ?? "this household") and signed in as a guest. After signing out, nobody can get back into it.")
+                } else {
+                    Text("Guest accounts can't sign back in. You'll lose access to \(app.household?.name ?? "this household") unless someone invites you again.")
+                }
             }
         }
+    }
+
+    /// A guest who is the last member can't sign back in, so the household would be orphaned.
+    private var signOutLosesHousehold: Bool {
+        guard let user = app.user, user.isAnonymous, let household = app.household else { return false }
+        return household.memberUids.count <= 1
     }
 
     private var householdSection: some View {
@@ -174,6 +186,7 @@ struct SettingsView: View {
             Button("Simulate recall", systemImage: "exclamationmark.octagon") { Task { await app.simulateRecall() } }
             Button("Simulate price drop", systemImage: "arrow.down.circle") { Task { await app.simulatePriceDrop() } }
             Button("Test expiry notification", systemImage: "bell") { app.testExpiryNotification() }
+            if AppServices.isDemoBuild {
             Toggle(isOn: $mockMode) {
                 VStack(alignment: .leading) {
                     Text("Offline mock mode")
@@ -187,6 +200,7 @@ struct SettingsView: View {
                 UserDefaults.standard.set(value, forKey: AppServices.mockDefaultsKey)
                 app.showMessage("Quit and reopen DigiFridgy to switch to \(value ? "mock" : "live") mode.")
             }
+            }
         } header: {
             Text("Demo tools")
         } footer: {
@@ -195,17 +209,37 @@ struct SettingsView: View {
     }
 
     private var statusSection: some View {
-        Section("Services") {
+        Section {
+            if app.notificationsDenied {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Notifications off", systemImage: "bell.slash.fill").foregroundStyle(.orange).bold()
+                    Text("Expiry reminders, recall and price alerts can't be shown. Turn notifications on for DigiFridgy in the Settings app.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        Link("Open Settings", destination: url).font(.callout)
+                    }
+                }
+            }
             ForEach(app.services.statusLines, id: \.0) { name, live in
                 HStack {
                     Text(name)
                     Spacer()
-                    Text(live ? "Live" : "Mock").font(.caption.bold())
+                    Text(live ? "Live" : "Sample").font(.caption.bold())
                         .padding(.horizontal, 8).padding(.vertical, 2)
                         .background((live ? Color.green : Color.orange).opacity(0.18), in: .capsule)
                         .foregroundStyle(live ? .green : .orange)
                 }
             }
+            if let error = app.lastError {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Last error").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+        } header: {
+            Text("Services")
+        } footer: {
+            Text("“Sample” services show generated demo data, never real prices or recipes from that service.")
         }
     }
 }

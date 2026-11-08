@@ -52,10 +52,24 @@ final class AppServices {
         Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil
     }
 
-    /// Mock mode: `--mock` launch argument, the Settings toggle, running tests, or no SpacetimeDB config.
+    /// Debug (demo) builds offer the "Offline mock mode" switch; release builds never read it.
+    static var isDemoBuild: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    /// Mock mode: `--mock` launch argument, the Settings toggle (demo builds only), running tests,
+    /// or no SpacetimeDB config.
     static var shouldUseMocks: Bool {
-        ProcessInfo.processInfo.arguments.contains("--mock")
-            || UserDefaults.standard.bool(forKey: mockDefaultsKey)
+        if !isDemoBuild, UserDefaults.standard.object(forKey: mockDefaultsKey) != nil {
+            // A switch left on by a demo build must not force a live build into sample data.
+            UserDefaults.standard.removeObject(forKey: mockDefaultsKey)
+        }
+        return ProcessInfo.processInfo.arguments.contains("--mock")
+            || (isDemoBuild && UserDefaults.standard.bool(forKey: mockDefaultsKey))
             || isRunningTests
             || !Secrets.hasSpacetime
     }
@@ -111,7 +125,7 @@ final class AppServices {
         )
     }
 
-    /// Short human-readable status for Settings.
+    /// Short human-readable status for Settings: (service, live). Not live = sample data.
     var statusLines: [(String, Bool)] {
         [
             ("SpacetimeDB (household sync)", !isMock),
@@ -120,7 +134,8 @@ final class AppServices {
             ("CalorieNinjas", !isMock && Secrets.hasCalorieNinjas),
             ("Edamam recipes", !isMock && Secrets.hasEdamam),
             ("Kroger prices", !isMock && Secrets.hasKroger),
-            ("openFDA recalls", !isMock),
+            // USDA FSIS (meat, poultry, egg products) has no public API an app can call.
+            ("Recalls: FDA only (openFDA)", !isMock),
             ("On-device model (receipts)", normalizer.usesOnDeviceModel),
         ]
     }

@@ -122,10 +122,12 @@ protocol ReceiptNormalizer: AnyObject, Sendable {
 
 protocol NotificationService: AnyObject, Sendable {
     func requestAuthorization() async -> Bool
-    func scheduleExpiryReminder(for item: FridgeItem)
-    func cancelExpiryReminder(itemId: String)
-    /// Removes pending and already-shown expiry reminders for every item not in `keep` (gone from the fridge, or signed out).
-    func removeExpiryReminders(except keep: Set<String>) async
+    /// Current permission (false = denied or not asked yet).
+    func isAuthorized() async -> Bool
+    /// Makes pending expiry reminders match the household's items (adds, replaces, removes).
+    func reconcile(items: [FridgeItem]) async
+    /// Removes every pending reminder (sign-out, leaving the household).
+    func removeAllReminders()
     func notifyNow(id: String, title: String, body: String)
 }
 

@@ -101,10 +101,17 @@ async def weekly_jobs(ctx: Ctx, hh: Household) -> None:
 
 
 async def tick(ctx: Ctx) -> dict:
-    # Pending actions expire lazily when answered, so a late YES gets "that offer expired".
+    # Pending actions expire lazily when answered, so a late YES gets "that offer expired". That is
+    # safe because the clock never moves back (Clock.advance refuses negatives, and only DEMO_MODE
+    # has an offset at all), and claim_open re-checks expiry atomically.
     with Session(ctx.engine) as s:
         households = list(s.exec(select(Household)))
     summary = {"expired": 0, "nudged": 0}
+    try:
+        from ..transfers import retry_deposits
+        summary["deposits_retried"] = await retry_deposits(ctx)
+    except Exception:
+        log.exception("deposit retry failed")
     for hh in households:
         try:
             summary["expired"] += len(await expire_and_report(ctx, hh))

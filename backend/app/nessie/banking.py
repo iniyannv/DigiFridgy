@@ -89,15 +89,14 @@ async def _balance(ctx: Ctx, account_id: str) -> float | None:
 
 async def execute_transfer(ctx: Ctx, hh: Household, action_id: int, amount: float) -> str:
     """Runs only after an explicit YES. The atomic claim guarantees one transfer per offer."""
+    from ..transfers import move
     now = ctx.clock.now()
     if not pending.claim_open(ctx.engine, action_id, now):
         return copy.offer_expired()
-    try:
-        await ctx.nessie.create_transfer(hh.checking_account_id, hh.grocery_fund_account_id, amount,
-                                         "DigiFridgey weekly grocery budget sweep",
-                                         ctx.clock.today().isoformat())
-    except Exception:
-        log.exception("transfer failed")
+    out = await move(ctx, f"sweep:{action_id}", hh.checking_account_id, hh.grocery_fund_account_id, amount,
+                     "DigiFridgey weekly grocery budget sweep", ctx.clock.today().isoformat())
+    if not out.money_left:
+        log.warning("sweep transfer %s: %s", action_id, out.status)
         pending.finish(ctx.engine, action_id, "failed")
         return copy.transfer_failed()
     pending.finish(ctx.engine, action_id, "done")

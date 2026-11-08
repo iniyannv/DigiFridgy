@@ -39,7 +39,9 @@ struct ShelfLifeServiceTests {
     @Test func estimatedExpiryAddsCategoryDays() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let expiry = service.estimatedExpiry(categoryID: "chicken", from: start)
-        #expect(Calendar.current.dateComponents([.day], from: start, to: expiry).day == 2)
+        // Expiry is a calendar day: two days after the day it was added.
+        #expect(Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: start), to: expiry).day == 2)
+        #expect(expiry == Calendar.current.startOfDay(for: expiry))
     }
 }
 

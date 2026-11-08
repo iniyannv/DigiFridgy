@@ -42,6 +42,8 @@ struct MainTabView: View {
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .task(id: app.householdId) {
+            // Bank requests carry the same token the app uses for SpacetimeDB; the server verifies it.
+            bank.tokenProvider = { [auth = app.services.auth] in try? await auth.idToken() }
             await bank.watch(appHouseholdID: app.householdId, appIdentity: app.services.repository.identityHex)
         }
     }

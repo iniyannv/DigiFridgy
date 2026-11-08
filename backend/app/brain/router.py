@@ -11,8 +11,9 @@ INTENTS = ("start", "fridge", "expiring", "used", "tossed", "list", "add", "remo
            "trips", "claim", "claim_last", "ask_claim", "unknown")
 
 # Intents an LLM may return. Confirmations and opt-out are keyword-only.
-LLM_INTENTS = ("fridge", "expiring", "used", "tossed", "list", "add", "remove", "money", "budget",
-               "dinner", "help", "privacy", "check", "settle", "trips", "claim", "ask_claim", "unknown")
+# Anything that can lead to money moving (settle offers, the budget that sizes a sweep) is keyword-only too.
+LLM_INTENTS = ("fridge", "expiring", "used", "tossed", "list", "add", "remove", "money",
+               "dinner", "help", "privacy", "check", "trips", "claim", "ask_claim", "unknown")
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Intent:
     amount: float | None = None
     choice: int | None = None
     source: str = "keyword"
+    exact: bool = False  # "yes": the full word YES, which is the only reply that moves money
 
 
 def _norm(text: str) -> str:
@@ -35,14 +37,15 @@ _ITEM = r"(?:the |my |our |some |all (?:the |of the )?)?(?P<item>.+?)"
 _LIST_SUFFIX = r"(?: (?:to|on|onto|from|off) (?:my |the |our )?(?:shopping |grocery )?list)?"
 
 RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
-    ("stop", r"^(stop|unsubscribe|stop all|quit|end)$"),
-    ("start", r"^(start|hi|hello|hey|hiya|yo|sup|ping)( there)?( fridge| digifridgey)?$"),
+    ("stop", r"^(stop|stopall|stop all|unsubscribe|cancel|end|quit|revoke|opt ?out|opt-out"
+             r"|stop (texting|messaging|sending)( me| us)?( messages| texts)?( please)?|leave me alone)$"),
+    ("start", r"^(start|unstop|hi|hello|hey|hiya|yo|sup|ping)( there)?( fridge| digifridgey)?$"),
     ("help", r"^(help|commands|menu|\?|what can you do)$"),
     ("privacy", r"^privacy( policy)?$"),
     ("app", r"^(app|the app|invite|invite code|app code|code|share( (the|my) fridge)?)$"),
-    ("link", r"^(?:link|join|connect)(?: (?:to|with))?(?: (?:the )?app)?(?: code)? (?P<item>[a-z0-9]{6})$"),
+    ("link", r"^(?:link|join|connect)(?: (?:to|with))?(?: (?:the )?app)?(?: code)? (?P<item>[a-z0-9]{6,8})$"),  # 8-char codes; old 6-char ones still work
     ("yes", r"^(yes|y|yep|yeah|yup|ya|sure|ok|okay|confirm|do it)$"),
-    ("no", r"^(no|n|nope|nah|cancel|don't|dont|not now)$"),
+    ("no", r"^(no|n|nope|nah|don't|dont|not now)$"),
     ("choice", r"^(?P<choice>[1-9])$"),
     ("add_all", r"^add (them )?all$"),
     ("fridge", r"^(fridge|inventory|show (me )?(my |the )?fridge|what'?s in (my |the )?fridge|what do i have)$"),
@@ -92,7 +95,7 @@ def keyword_intent(text: str) -> Intent | None:
             item = re.sub(r"\b(please|pls|thanks|thank you)\b", "", item).strip(" ,") or None
         amount = float(g["amount"]) if g.get("amount") else None
         choice = int(g["choice"]) if g.get("choice") else None
-        return Intent(name=name, item=item, amount=amount, choice=choice)
+        return Intent(name=name, item=item, amount=amount, choice=choice, exact=(name == "yes" and t == "yes"))
     return None
 
 

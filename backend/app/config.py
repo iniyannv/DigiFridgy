@@ -41,6 +41,7 @@ class Settings:
     llm_model: str = "gemini-2.5-flash"
     demo_mode: bool = True
     demo_token: str = ""
+    admin_token: str = ""  # presenter-only actions (reset with wipe_nessie, picking any household)
     timezone: str = "America/Chicago"
     use_mock_nessie: bool = True
     use_mock_photon: bool = True
@@ -96,6 +97,7 @@ class Settings:
             llm_model=e("LLM_MODEL", "") or cls.llm_model,
             demo_mode=_bool("DEMO_MODE", True),
             demo_token=e("DEMO_TOKEN", ""),
+            admin_token=e("ADMIN_TOKEN", ""),
             timezone=e("TIMEZONE", "") or cls.timezone,
             # Mocks turn on automatically when a key is missing; set false to force live.
             use_mock_nessie=_bool("USE_MOCK_NESSIE", not nessie_key),

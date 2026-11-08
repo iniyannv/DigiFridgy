@@ -111,16 +111,25 @@ the app's fridge become one. Code: [`app/spacetime/`](app/spacetime/bridge.py).
 Baskets: `weekly` (Avon Fresh Market, 9 items, $42.18), `quick`, `taco`, `oat` (makes "milk"
 ambiguous on purpose), `fuel` (non-grocery, ignored by the fridge).
 
-Set `DEMO_TOKEN` if the server is reachable from the internet; the page then needs `?token=…`.
+**Who can call what** ([`app/auth.py`](app/auth.py)):
+- **Without `DEMO_TOKEN`**, `/demo/*` and `/signup` only answer requests from this computer (the simulator works). To use them from a phone or over a tunnel, set `DEMO_TOKEN` and the app's `DIGIFRIDGEY_TOKEN`. The token goes in the `X-Demo-Token` header, and the demo page passes `?token=…` along as that header.
+- **The app's bank routes** (`state?app_household_id=`, `purchases`, `settle`, `settle/pay`, `settle/ask`, `roommate`) take *who you are* from `Authorization: Bearer <the app's SpacetimeDB token>`, which the server checks with SpacetimeDB.
+  - You only see your own fridge's bank.
+  - `settle/pay` always pays from your own checking, and never more than `quoted_amount` (the amount the dialog showed).
+- **Operator actions** (the household picker, any conversation, `reset`) need this computer or `X-Admin-Token: $ADMIN_TOKEN` (`?admin=…` on the demo page). `reset?wipe_nessie=true` needs `ADMIN_TOKEN` to be set.
+- **Signing up with a number that already has a bank** doesn't connect anything: it texts that phone, and it connects only after the owner replies YES.
+- **Money moves exactly once:** each transfer is claimed in the database before Nessie is called ([`app/transfers.py`](app/transfers.py)). Nessie POSTs are never retried blindly, and a failed deposit is retried on its own by the scheduler.
+- **YES only moves money as the full word YES**, from the person the offer was sent to. A money offer never replaces an open fridge question.
+- **The demo clock** can't go back, and it is ignored outside `DEMO_MODE`.
 
 **Demo order tip:** run the budget sweep *before* a multi-day time-skip. A skip that crosses
 Monday starts a new budget week, so "this week" spend resets to $0.
 
 ## Commands (always work, no LLM needed)
 
-`START` · `APP` (app invite code) · `LINK <code>` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
+`START` (the only way back after STOP) · `APP` (app invite code) · `LINK <code>` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
 `LIST` · `ADD <item>` · `REMOVE <item>` · `ADD ALL` · `MONEY` · `BUDGET 90` · `TRIPS` · `SETTLE` · `YES` / `NO` ·
-`1`/`2` (pick between matches, or drop a photo item) · "who's grabbing milk?" · `I WILL` · "I'll get eggs" · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP`
+`1`/`2` (pick between matches, or drop a photo item) · "who's grabbing milk?" · `I WILL` · "I'll get eggs" · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP` (also CANCEL, STOPALL, UNSUBSCRIBE, REVOKE, OPT OUT, "stop texting me")
 
 With `LLM_API_KEY` set, Gemini classifies messages the keyword rules don't recognize and writes
 dinner ideas. It can never produce YES, NO, STOP or ADD ALL; those must be typed.

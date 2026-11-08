@@ -1,20 +1,46 @@
 import SwiftUI
 
+/// Price estimate for one shopping-list entry: what the household last paid on the card, or else the
+/// category's *typical* price (a generated baseline, always labeled as such).
+nonisolated struct ShoppingEstimate: Hashable, Sendable {
+    var price: Double
+    var paid: Bool
+
+    /// "$3.49" for a price paid on the card, "~$3.49" for a typical one.
+    var priceText: String { (paid ? "" : "~") + price.formatted(.currency(code: "USD")) }
+    /// Badge shown next to typical prices.
+    var badge: String? { paid ? nil : "Typical price" }
+
+    static func estimate(name: String, items: [FridgeItem], typicalPrice: (String) -> Double) -> ShoppingEstimate {
+        let wanted = Set(ShelfLifeService.tokenize(name))
+        let paid = items
+            .filter { item in
+                guard item.price != nil, !wanted.isEmpty else { return false }
+                // Whole words: "corn" doesn't match "popcorn", but "milk" matches "Whole Milk".
+                let words = Set(ShelfLifeService.tokenize(item.name))
+                return wanted.isSubset(of: words) || (!words.isEmpty && words.isSubset(of: wanted))
+            }
+            .max { $0.addedAt < $1.addedAt }?.price
+        if let paid { return ShoppingEstimate(price: paid, paid: true) }
+        return ShoppingEstimate(price: typicalPrice(name), paid: false)
+    }
+
+    /// "About $12.40", plus "(includes typical prices)" when any entry isn't a card price.
+    static func totalText(_ estimates: [ShoppingEstimate]) -> String {
+        let total = estimates.map(\.price).reduce(0, +).formatted(.currency(code: "USD"))
+        return estimates.contains(where: { !$0.paid }) ? "About \(total) (includes typical prices)" : "About \(total)"
+    }
+}
+
 struct ShoppingListView: View {
     @Environment(AppState.self) private var app
     @Environment(BankStore.self) private var bank
     @State private var newItem = ""
 
-    /// Per-unit price for a list entry: what the household last paid on the card, else the category's typical price.
-    private func estimate(_ entry: ShoppingListItem) -> (price: Double, paid: Bool) {
-        let name = entry.name.lowercased()
-        let paid = app.items
-            .filter { $0.price != nil && ($0.name.lowercased() == name || $0.name.lowercased().contains(name)
-                                          || name.contains($0.name.lowercased())) }
-            .max { $0.addedAt < $1.addedAt }?.price
-        if let paid { return (paid, true) }
-        let category = app.services.shelfLife.categoryID(forName: entry.name)
-        return (app.services.mockPrices.referencePrice(categoryID: category), false)
+    private func estimate(_ entry: ShoppingListItem) -> ShoppingEstimate {
+        ShoppingEstimate.estimate(name: entry.name, items: app.items) { name in
+            app.services.mockPrices.referencePrice(categoryID: app.services.shelfLife.categoryID(forName: name))
+        }
     }
 
     private var open: [ShoppingListItem] { app.shoppingList.filter { !$0.done } }
@@ -52,7 +78,14 @@ struct ShoppingListView: View {
                                     Spacer()
                                     if !entry.done {
                                         let e = estimate(entry)
-                                        Text("\(e.paid ? "" : "~")\(e.price.formatted(.currency(code: "USD")))")
+                                        if let badge = e.badge {
+                                            Text(badge)
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                                .background(.yellow.opacity(0.25), in: .capsule)
+                                                .foregroundStyle(.orange)
+                                        }
+                                        Text(e.priceText)
                                             .font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
                                     }
                                 }
@@ -88,7 +121,7 @@ struct ShoppingListView: View {
         return Section {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("About \(total.formatted(.currency(code: "USD")))").font(.title3.bold()).monospacedDigit()
+                    Text(ShoppingEstimate.totalText(estimates)).font(.title3.bold()).monospacedDigit()
                     Spacer()
                     if let hh = bank.household {
                         let left = hh.weekLeft
@@ -111,7 +144,7 @@ struct ShoppingListView: View {
             .padding(.vertical, 4)
         } footer: {
             Text(typical == 0 ? "Prices are what you last paid on your card."
-                 : "Prices are what you last paid on your card; ~ marks a typical price for things you haven't bought yet.")
+                 : "Prices are what you last paid on your card. “Typical price” (~) is a sample estimate for things you haven't bought yet, not a store's price.")
         }
     }
 

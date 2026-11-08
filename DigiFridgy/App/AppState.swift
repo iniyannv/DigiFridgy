@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import BackgroundTasks
+import os
 
 struct Toast: Identifiable {
     let id = UUID()
@@ -18,7 +19,9 @@ final class AppState {
         case launching, onboarding, householdSetup, ready
     }
 
-    static let refreshTaskID = "com.iniyann.digifridgy.refresh"
+    /// Matches `BGTaskSchedulerPermittedIdentifiers` in Info.plist (`$(PRODUCT_BUNDLE_IDENTIFIER).refresh`).
+    static let refreshTaskID = (Bundle.main.bundleIdentifier ?? "com.iniyann.digifridgy") + ".refresh"
+    private static let log = Logger(subsystem: "DigiFridgy", category: "app")
 
     let services: AppServices
     let notificationDelegate = NotificationDelegate()
@@ -35,9 +38,17 @@ final class AppState {
     var toast: Toast?
     var isRunningChecks = false
     var lastChecksSummary: String?
+    /// Last error shown to the user (also kept for Settings / debugging once the toast is gone).
+    var lastError: String?
+    /// Notification permission was denied: expiry reminders and alerts can't be shown.
+    var notificationsDenied = false
 
     private var itemsTask: Task<Void, Never>?
     private var shoppingTask: Task<Void, Never>?
+    private var reconcileTask: Task<Void, Never>?
+    private var checksTask: Task<String, Never>?
+    /// A live stream ended with an error; resubscribe when the app becomes active again.
+    private var streamsEnded = false
     private var approvalsTask: Task<Void, Never>?
 
     init(services: AppServices) {
@@ -63,7 +74,13 @@ final class AppState {
     // MARK: Toasts
 
     func showError(_ error: any Error) {
-        toast = Toast(message: error.localizedDescription, isError: true)
+        showError(message: error.localizedDescription)
+    }
+
+    func showError(message: String) {
+        lastError = message
+        Self.log.error("\(message, privacy: .public)")
+        toast = Toast(message: message, isError: true)
     }
 
     func showMessage(_ message: String, actionTitle: String? = nil, action: (() -> Void)? = nil) {
@@ -103,9 +120,9 @@ final class AppState {
         phase = .ready
         startListening(householdId: household.id)
         Task {
-            if await services.notifications.requestAuthorization() {
-                items.forEach(services.notifications.scheduleExpiryReminder)
-            }
+            let granted = await services.notifications.requestAuthorization()
+            notificationsDenied = !granted
+            if granted { scheduleReconcile() }
         }
     }
 
@@ -113,18 +130,21 @@ final class AppState {
         itemsTask?.cancel()
         shoppingTask?.cancel()
         itemsLoaded = false
+        streamsEnded = false
         itemsTask = Task { [weak self, repository = services.repository] in
             do {
                 for try await items in repository.itemsStream(householdId: householdId) {
                     guard let self else { return }
-                    let previous = itemsLoaded ? self.items : nil
                     self.items = items
-                    itemsLoaded = true
-                    await syncReminders(from: previous, to: items)
+                    self.itemsLoaded = true
+                    // Roommates' and the bank's changes arrive here too, so reminders follow every change.
+                    self.scheduleReconcile()
                 }
+            } catch is CancellationError {
             } catch {
                 self?.itemsLoaded = true
-                self?.showError(error)
+                self?.streamsEnded = true
+                self?.showError(message: "The fridge stopped updating: \(error.localizedDescription)")
             }
         }
         approvalsTask?.cancel()
@@ -138,45 +158,41 @@ final class AppState {
                 for try await list in repository.shoppingStream(householdId: householdId) {
                     self?.shoppingList = list
                 }
+            } catch is CancellationError {
             } catch {
-                // Shopping list is secondary; the items stream already surfaces permission errors.
+                self?.streamsEnded = true
+                self?.showError(message: "The shopping list stopped updating: \(error.localizedDescription)")
             }
         }
     }
 
-    /// Keeps expiry reminders in step with the fridge, including items that arrive from the bank,
-    /// iMessage or a roommate, and items someone else used up. `previous == nil` is the first load
-    /// for this household: reminders left from earlier sessions or another household are cleared.
-    private func syncReminders(from previous: [FridgeItem]?, to current: [FridgeItem]) async {
-        let notifications = services.notifications
-        guard let previous else {
-            await notifications.removeExpiryReminders(except: Set(current.map(\.id)))
-            // Signed out or left while waiting: don't bring back the old household's reminders.
-            guard !Task.isCancelled else { return }
-            current.forEach(notifications.scheduleExpiryReminder)
-            return
+    /// Scene became active: resubscribe if a live stream ended, and refresh notification permission.
+    func didBecomeActive() {
+        guard phase == .ready, let hid = householdId else { return }
+        if streamsEnded {
+            Self.log.info("resubscribing to household streams")
+            startListening(householdId: hid)
         }
-        let old = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let ids = Set(current.map(\.id))
-        for id in old.keys where !ids.contains(id) {
-            notifications.cancelExpiryReminder(itemId: id)
-        }
-        for item in current where old[item.id] != item {
-            notifications.scheduleExpiryReminder(for: item)
+        Task {
+            notificationsDenied = !(await services.notifications.isAuthorized())
+            scheduleReconcile()
         }
     }
 
-    /// Stops the household's live streams and clears what this phone shows and reminds about.
-    private func leaveHouseholdLocally() {
-        itemsTask?.cancel()
-        shoppingTask?.cancel()
-        approvalsTask?.cancel()
-        approvals = []
-        household = nil
-        items = []
-        shoppingList = []
-        itemsLoaded = false
-        Task { await services.notifications.removeExpiryReminders(except: []) }
+    /// Coalesces bursts of item changes into one reminder reconcile.
+    private func scheduleReconcile() {
+        reconcileTask?.cancel()
+        reconcileTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let self, !Task.isCancelled, self.householdId != nil else { return }
+            await self.services.notifications.reconcile(items: self.items)
+        }
+    }
+
+    private func clearReminders() {
+        reconcileTask?.cancel()
+        reconcileTask = nil
+        services.notifications.removeAllReminders()
     }
 
     func signInAnonymously() async {
@@ -207,9 +223,16 @@ final class AppState {
 
     func signOut() {
         do { try services.auth.signOut() } catch { showError(error) }
-        leaveHouseholdLocally()
+        itemsTask?.cancel()
+        shoppingTask?.cancel()
+        clearReminders()
+        approvalsTask?.cancel()
+        approvals = []
         user = nil
         profile = nil
+        household = nil
+        items = []
+        shoppingList = []
         phase = .onboarding
     }
 
@@ -245,7 +268,14 @@ final class AppState {
         do {
             try await services.repository.leaveHousehold(id: hid, uid: user.uid)
             try await updateProfile { $0.householdId = nil }
-            leaveHouseholdLocally()
+            itemsTask?.cancel()
+            shoppingTask?.cancel()
+            clearReminders()
+            approvalsTask?.cancel()
+            approvals = []
+            household = nil
+            items = []
+            shoppingList = []
             phase = .householdSetup
         } catch {
             showError(error)
@@ -297,10 +327,21 @@ final class AppState {
         try await services.products.lookup(barcode: Barcode.normalize(barcode))
     }
 
-    /// Existing item with the same barcode, if any (scanning it again bumps its count).
+    /// Existing item with the same barcode, if any.
     func existingItem(barcode: String) -> FridgeItem? {
         let code = Barcode.normalize(barcode)
         return items.first { $0.normalizedBarcode == code }
+    }
+
+    /// An item a re-scan of this barcode can simply add one to: same product, no recall flag, and an estimated
+    /// expiry equal to what a new unit would get today. Otherwise the scan becomes a new unit with its own estimate.
+    func bumpableItem(barcode: String) -> FridgeItem? {
+        let code = Barcode.normalize(barcode)
+        return items.first { item in
+            item.normalizedBarcode == code && item.recallFlag == nil && item.expiryIsEstimated
+                && Calendar.current.isDate(item.expiresAt,
+                                           inSameDayAs: shelfLife.estimatedExpiry(categoryID: item.category))
+        }
     }
 
     func draft(from product: ProductInfo) -> FridgeItem {
@@ -368,7 +409,7 @@ final class AppState {
                 || item.category != original.category || item.nutrition != original.nutrition
         } ?? true
         if item.barcode != nil, edited || hasSavedCorrections(barcode: item.barcode) {
-            services.productOverrides.remember(item)
+            rememberCorrections(item)
         }
         return await save(item)
     }
@@ -389,8 +430,14 @@ final class AppState {
         }
         updated.nutrition = nutrition.flatMap { $0.isEmpty && $0.servingSize == nil ? nil : $0 }
         guard await save(updated) else { return false }
-        if updated.barcode != nil { services.productOverrides.remember(updated) }
+        if updated.barcode != nil { rememberCorrections(updated) }
         return true
+    }
+
+    private func rememberCorrections(_ item: FridgeItem) {
+        if let error = services.productOverrides.remember(item) {
+            showError(message: "Couldn't save your corrections for next time: \(error.localizedDescription)")
+        }
     }
 
     /// For barcodes Open Food Facts doesn't know: user-typed name + CalorieNinjas nutrition.
@@ -410,7 +457,7 @@ final class AppState {
         do {
             try await services.repository.saveItem(item, householdId: hid)
             upsertLocal(item)
-            services.notifications.scheduleExpiryReminder(for: item)
+            scheduleReconcile()
             return true
         } catch {
             showError(error)
@@ -423,7 +470,7 @@ final class AppState {
         do {
             try await services.repository.saveItems(newItems, householdId: hid)
             newItems.forEach(upsertLocal)
-            newItems.forEach(services.notifications.scheduleExpiryReminder)
+            scheduleReconcile()
             showMessage("Added \(newItems.count) item\(newItems.count == 1 ? "" : "s") from your receipt")
             return true
         } catch {
@@ -440,29 +487,38 @@ final class AppState {
 
     func adjustCount(_ item: FridgeItem, by delta: Int) async {
         guard let hid = householdId else { return }
-        let newCount = item.count + delta
+        // The view's copy can be stale (a roommate's change may have arrived since): start from the current one.
+        let current = self.item(id: item.id) ?? item
+        let base = current.count
+        let newCount = max(base + delta, 0)
         if delta < 0 {
             // Using food up is recorded as yours, so roommates can split what each of them ate.
             do {
-                try await services.repository.useItem(id: item.id, qty: min(-delta, item.count), name: item.name,
+                try await services.repository.useItem(id: current.id, qty: min(-delta, base), name: current.name,
                                                        remaining: newCount, householdId: hid)
             } catch {
                 showError(error)
                 return
             }
             if newCount <= 0 {
-                removedLocally(item, ranOut: true)
-            } else if let idx = items.firstIndex(where: { $0.id == item.id }) {
-                items[idx].count = newCount
+                removedLocally(current, ranOut: true)
+            } else {
+                applyCount(itemId: current.id, from: base, to: newCount)
             }
             return
         }
         do {
-            try await services.repository.incrementCount(itemId: item.id, by: delta, householdId: hid)
-            if let idx = items.firstIndex(where: { $0.id == item.id }) { items[idx].count = newCount }
+            try await services.repository.incrementCount(itemId: current.id, by: delta, householdId: hid)
+            applyCount(itemId: current.id, from: base, to: newCount)
         } catch {
             showError(error)
         }
+    }
+
+    /// After an await: only apply our change if the live stream hasn't already delivered a newer count.
+    private func applyCount(itemId: String, from base: Int, to newCount: Int) {
+        guard let idx = items.firstIndex(where: { $0.id == itemId }), items[idx].count == base else { return }
+        items[idx].count = newCount
     }
 
     func delete(_ item: FridgeItem, ranOut: Bool = false) async {
@@ -477,7 +533,7 @@ final class AppState {
 
     private func removedLocally(_ item: FridgeItem, ranOut: Bool) {
         items.removeAll { $0.id == item.id }
-        services.notifications.cancelExpiryReminder(itemId: item.id)
+        scheduleReconcile()
         if ranOut {
             services.notifications.notifyNow(id: "runout-\(item.id)", title: "You're out of \(item.name)",
                                              body: "Add it to the shopping list?")
@@ -488,10 +544,19 @@ final class AppState {
     }
 
     func setExpiry(_ item: FridgeItem, to date: Date) async {
-        var updated = item
-        updated.expiresAt = date
+        var updated = self.item(id: item.id) ?? item
+        updated.expiresAt = Calendar.current.startOfDay(for: date)
         updated.expiryIsEstimated = false
         _ = await save(updated)
+    }
+
+    /// "Not my product": clears the recall flag and never flags this item for that recall again.
+    func dismissRecall(_ item: FridgeItem) async {
+        var updated = self.item(id: item.id) ?? item
+        guard let flag = updated.recallFlag else { return }
+        updated.recallFlag = nil
+        if !updated.dismissedRecallIDs.contains(flag.recallId) { updated.dismissedRecallIDs.append(flag.recallId) }
+        if await save(updated) { showMessage("Recall dismissed for \(updated.name)") }
     }
 
     // MARK: Shopping list
@@ -551,8 +616,18 @@ final class AppState {
 
     // MARK: Checks (recalls + watched prices) — shared by BGAppRefreshTask and "Run checks now"
 
+    /// Single-flight: a second caller (background task + "Run checks now") waits for the run in progress.
     @discardableResult
     func runChecks() async -> String {
+        if let running = checksTask { return await running.value }
+        let task = Task { await performChecks() }
+        checksTask = task
+        let summary = await task.value
+        checksTask = nil
+        return summary
+    }
+
+    private func performChecks() async -> String {
         guard let hid = householdId else { return "No household" }
         isRunningChecks = true
         defer { isRunningChecks = false }
@@ -562,17 +637,22 @@ final class AppState {
         do {
             let recalls = try await services.recalls.recentRecalls(days: 90)
             var flagged = 0
-            for item in items where item.recallFlag == nil {
-                guard let recall = services.recallMatcher.match(item, in: recalls) else { continue }
+            for id in items.map(\.id) {
+                // Re-read after every await: the item may have changed or gone meanwhile.
+                guard let item = self.item(id: id), item.recallFlag == nil,
+                      let hit = services.recallMatcher.match(item, in: recalls) else { continue }
                 var updated = item
-                updated.recallFlag = recall.asFlag
+                updated.recallFlag = hit.flag
                 try await services.repository.saveItem(updated, householdId: hid)
-                upsertLocal(updated)
+                // Apply only the flag to whatever the item looks like now.
+                if let idx = items.firstIndex(where: { $0.id == id }) { items[idx].recallFlag = hit.flag }
                 flagged += 1
-                services.notifications.notifyNow(id: "recall-\(item.id)", title: "Recall: \(item.name)",
-                                                 body: recall.reason)
+                services.notifications.notifyNow(
+                    id: "recall-\(id)",
+                    title: hit.confidence == .possible ? "Possible recall: \(item.name)" : "Recall: \(item.name)",
+                    body: hit.confidence == .possible ? "Check the brand. \(hit.recall.reason)" : hit.recall.reason)
             }
-            notes.append("\(recalls.count) recalls checked, \(flagged) new match\(flagged == 1 ? "" : "es")")
+            notes.append("\(recalls.count) FDA recalls checked, \(flagged) new match\(flagged == 1 ? "" : "es")")
         } catch {
             notes.append("Recalls failed: \(error.localizedDescription)")
         }
@@ -586,43 +666,65 @@ final class AppState {
         return summary
     }
 
+    /// Price-drop alerts compare live Kroger prices with earlier live prices only. Sample prices are never
+    /// alerted on (they aren't real), and history records which kind each price was.
     private func checkWatchedPrices(householdId hid: String) async -> String {
         let watchlist = profile?.watchlist ?? []
         guard !watchlist.isEmpty else { return "No watched prices" }
+        guard services.kroger.isLive else { return "Price alerts need live Kroger prices (only sample prices here)" }
         let coordinate = await currentCoordinate()
         let radius = profile?.searchRadiusMiles ?? 10
-        guard let store = try? await services.kroger.locations(near: coordinate, radiusMiles: radius, limit: 1).first else {
-            return "No Kroger store in range"
+        let store: Store
+        do {
+            guard let nearest = try await services.kroger.locations(near: coordinate, radiusMiles: radius, limit: 1).first else {
+                return "No Kroger store in range"
+            }
+            store = nearest
+        } catch {
+            return "Kroger failed: \(error.localizedDescription)"
         }
         var drops = 0
+        var failures = 0
         for upc in watchlist {
             let item = items.first { $0.normalizedBarcode == upc }
             let name = item?.name ?? upc
-            let price: Double?
-            if services.kroger.isLive {
-                price = (try? await services.kroger.price(upc: upc, term: name, locationId: store.id))?.map(\.effective) ?? nil
-            } else {
-                let reference = services.mockPrices.referencePrice(categoryID: item?.category ?? "")
-                price = services.mockPrices.price(upc: upc, name: name, chain: store.chain, referencePrice: reference)
+            let price: Double
+            do {
+                guard let live = try await services.kroger.price(upc: upc, term: name, locationId: store.id) else { continue }
+                price = live.effective
+            } catch {
+                failures += 1
+                continue
             }
-            guard let price else { continue }
-            let previous = try? await services.repository.priceHistory(upc: upc, householdId: hid)
-            if let previous, price < previous.lastPrice - 0.001 {
+            let previous: PriceHistory?
+            do {
+                previous = try await services.repository.priceHistory(upc: upc, householdId: hid)
+            } catch {
+                failures += 1
+                previous = nil
+            }
+            if let previous, previous.isLive, price < previous.lastPrice - 0.001 {
                 drops += 1
                 notifyPriceDrop(name: name, price: price, previous: previous.lastPrice, store: store.name)
             }
-            try? await services.repository.savePriceHistory(
-                PriceHistory(upc: upc, lastPrice: price, lastStoreId: store.id, checkedAt: .now), householdId: hid)
+            do {
+                try await services.repository.savePriceHistory(
+                    PriceHistory(upc: upc, lastPrice: price, lastStoreId: store.id, checkedAt: .now), householdId: hid)
+            } catch {
+                failures += 1
+            }
         }
-        return "\(watchlist.count) watched price\(watchlist.count == 1 ? "" : "s"), \(drops) drop\(drops == 1 ? "" : "s")"
+        var summary = "\(watchlist.count) watched price\(watchlist.count == 1 ? "" : "s"), \(drops) drop\(drops == 1 ? "" : "s")"
+        if failures > 0 { summary += ", \(failures) failed" }
+        return summary
     }
 
-    private func notifyPriceDrop(name: String, price: Double, previous: Double, store: String) {
+    private func notifyPriceDrop(name: String, price: Double, previous: Double, store: String, demo: Bool = false) {
         services.notifications.notifyNow(
             id: "price-\(name)-\(Int(Date.now.timeIntervalSince1970))",
-            title: "Price drop: \(name)",
+            title: "\(demo ? "Demo: price drop" : "Price drop"): \(name)",
             body: "Now \(price.formatted(.currency(code: "USD"))) at \(store) (was \(previous.formatted(.currency(code: "USD"))))."
-        )
+                + (demo ? " Sample prices, not a real offer." : ""))
     }
 
     /// Called by the BGAppRefreshTask. The app may be cold-launched in the background.
@@ -633,13 +735,19 @@ final class AppState {
             items = fetched
         }
         await runChecks()
+        await services.notifications.reconcile(items: items)
         scheduleBackgroundRefresh()
     }
 
     func scheduleBackgroundRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskID)
         request.earliestBeginDate = .now.addingTimeInterval(4 * 3600)
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            // Expected in the Simulator (unsupported); on a device it means the identifier isn't permitted.
+            Self.log.error("background refresh not scheduled (\(Self.refreshTaskID, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: Location
@@ -665,7 +773,7 @@ final class AppState {
         do {
             try await services.repository.saveItems(seed, householdId: hid)
             seed.forEach(upsertLocal)
-            seed.forEach(services.notifications.scheduleExpiryReminder)
+            scheduleReconcile()
             if profile?.allergens.isEmpty ?? true {
                 try await updateProfile { $0.allergens = [Allergen.sesame.rawValue] }
             }
@@ -690,14 +798,17 @@ final class AppState {
             codeInfo: target.barcode ?? "", firm: target.brand ?? "Demo Foods Inc.", date: .now,
             classification: "Class I",
             url: "https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts")
-        // Run it through the real matcher so the demo exercises the same path as live data.
-        let matched = services.recallMatcher.match(target, in: [recall]) ?? recall
+        // Run it through the real matcher so the demo exercises the same path as live data
+        // (a brandless item without a barcode comes out as a possible recall).
+        let flag = services.recallMatcher.match(target, in: [recall])?.flag ?? recall.asFlag
         var updated = target
-        updated.recallFlag = matched.asFlag
+        updated.recallFlag = flag
         do {
             try await services.repository.saveItem(updated, householdId: hid)
             upsertLocal(updated)
-            services.notifications.notifyNow(id: "recall-\(target.id)", title: "Recall: \(target.name)", body: matched.reason)
+            services.notifications.notifyNow(id: "recall-\(target.id)",
+                                             title: "\(flag.isPossible ? "Possible recall" : "Recall"): \(target.name)",
+                                             body: recall.reason)
             showMessage("Simulated recall for \(target.name)")
         } catch {
             showError(error)
@@ -715,17 +826,22 @@ final class AppState {
         if !isWatched(item) { toggleWatch(item) }
         let reference = services.mockPrices.referencePrice(categoryID: item.category)
         let high = services.mockPrices.price(upc: item.barcode, name: item.name, chain: "Kroger", referencePrice: reference) + 1.0
-        notifyPriceDrop(name: item.name, price: high - 1.0, previous: high, store: "Kroger")
-        try? await services.repository.savePriceHistory(
-            PriceHistory(upc: item.normalizedBarcode ?? item.id, lastPrice: high, lastStoreId: "sim", checkedAt: .now),
-            householdId: hid)
-        showMessage("Simulated price drop for \(item.name)")
+        notifyPriceDrop(name: item.name, price: high - 1.0, previous: high, store: "Kroger", demo: true)
+        do {
+            // Stored as a sample price, so a later live check never compares against it.
+            try await services.repository.savePriceHistory(
+                PriceHistory(upc: item.normalizedBarcode ?? item.id, lastPrice: high,
+                             lastStoreId: PriceHistory.samplePrefix + "sim", checkedAt: .now),
+                householdId: hid)
+        } catch {
+            showError(error)
+        }
+        showMessage("Simulated price drop for \(item.name) (demo)")
     }
 
     func testExpiryNotification() {
         guard let item = sortedItems.first else { showMessage("Add an item first"); return }
-        let days = item.daysUntilExpiry()
-        services.notifications.notifyNow(id: "expiry-test-\(item.id)", title: "\(item.name) expires \(days <= 1 ? "tomorrow" : "in \(days) days")",
+        services.notifications.notifyNow(id: "expiry-test-\(item.id)", title: "\(item.name): \(item.expiryLabel())",
                                          body: "Use it up before it goes to waste.")
     }
 }

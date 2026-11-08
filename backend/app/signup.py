@@ -11,16 +11,26 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from .auth import app_caller, is_operator, require_demo_token
 from .context import Ctx
 from .households import member_by_handle, provision_household
 from .models import Household, Member
 
 log = logging.getLogger("signup")
+
+
+def mask(handle: str | None) -> str:
+    """For logs: enough to tell people apart, not enough to contact them."""
+    h = handle or ""
+    if "@" in h:
+        name, _, domain = h.partition("@")
+        return f"{name[:1]}…@{domain}"
+    return f"…{h[-4:]}" if len(h) > 4 else "…"
 E164 = re.compile(r"^\+[1-9]\d{6,14}$")
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
@@ -66,7 +76,7 @@ async def assign_line(ctx: Ctx, handle: str, first: str, last: str | None) -> tu
         a = await ctx.photon.assign_line(handle, f"digifridgey-signup:{handle}"[:255], first, last)
         return a.get("assignedPhoneNumber"), None
     except Exception as exc:
-        log.warning("line assignment failed for %s: %s", handle, exc)
+        log.warning("line assignment failed for %s: %s", mask(handle), exc)
         msg = str(exc)
         if "403" in msg:
             return None, "The Photon API key needs the platforms:write permission to assign lines."
@@ -119,31 +129,77 @@ async def sign_up(ctx: Ctx, first: str, last: str | None, raw_handle: str,
     if not line and ctx.settings.photon_agent_handle:
         # Fallback: the configured line works if this number was added in the Photon dashboard.
         line = ctx.settings.photon_agent_handle
+    app_linked = app_message = None
+    wants_app = bool(app_identity or (app_invite_code and app_invite_code.strip()))
+    if existing and wants_app:
+        # Anyone can type a phone number, so an existing bank is only connected to an app user or an
+        # app household after the phone's owner says YES over iMessage.
+        app_linked, app_message = False, await _ask_owner(ctx, hh, member, app_identity, app_invite_code)
+        return SignupResult(household=hh, member=member, line=line, line_error=error,
+                            simulated=ctx.photon.is_mock, existing=existing,
+                            app_linked=app_linked, app_link_message=app_message)
     if app_identity:
         remember_app_member(ctx, app_identity, hh.id)
-    app_linked = app_message = None
     if app_invite_code and app_invite_code.strip():
         from .spacetime.bridge import join_app_household
         try:
             app_linked, app_message = await join_app_household(ctx, hh, app_invite_code)
         except Exception:
-            log.exception("couldn't link household %s to app household %s", hh.id, app_invite_code)
+            log.exception("couldn't link household %s to an app household", hh.id)
             app_linked, app_message = False, "Couldn't reach the app's database to share the fridge."
     return SignupResult(household=hh, member=member, line=line, line_error=error,
                         simulated=ctx.photon.is_mock, existing=existing,
                         app_linked=app_linked, app_link_message=app_message)
 
 
-def remember_app_member(ctx: Ctx, identity: str, household_id: int) -> None:
-    """The app user with this SpacetimeDB identity is this bank household (for settle-up)."""
+async def _ask_owner(ctx: Ctx, hh: Household, member: Member, app_identity: str | None,
+                     app_invite_code: str | None) -> str:
+    from .brain import pending
+    from .photon.outbound import notify_household
+    if not member.welcomed or member.status != "active":
+        return ("This number already has a bank. Text the DigiFridgey line from that phone first, then "
+                "connect again.")
+    with Session(ctx.engine) as s:
+        pending.create(s, hh.id, "claim", {"identity": app_identity, "code": (app_invite_code or "").strip().upper(),
+                                           "member_id": member.id}, ctx.clock.now())
+        s.commit()
+    await notify_household(ctx, hh.id, "🔐 Someone asked to connect this bank to the DigiFridgy app"
+                           + (f" (fridge code {(app_invite_code or '').strip().upper()})" if app_invite_code else "")
+                           + ". Was it you? Reply YES to connect, NO if not.",
+                           f"claim:{hh.id}:{ctx.clock.real_now().timestamp():.0f}")
+    return "This number already has a bank. Reply YES on that phone to connect it to the app."
+
+
+async def confirm_claim(ctx: Ctx, household_id: int, payload: dict) -> str:
+    """The phone's owner said YES to connecting their existing bank to the app."""
+    with Session(ctx.engine) as s:
+        hh = s.get(Household, household_id)
+    if payload.get("identity"):
+        remember_app_member(ctx, payload["identity"], household_id)
+    if payload.get("code"):
+        from .spacetime.bridge import join_app_household
+        ok, message = await join_app_household(ctx, hh, payload["code"])
+        return message
+    return "🔗 Connected. The app can now see this bank."
+
+
+def remember_app_member(ctx: Ctx, identity: str, household_id: int) -> bool:
+    """The app user with this SpacetimeDB identity is this bank household (for settle-up). Never moves
+    an identity that already belongs to another bank: that would let one roommate pay from another's."""
     from .models import AppMember
     from .money import norm_identity
     ident = norm_identity(identity)
     if not re.fullmatch(r"[0-9a-f]{16,128}", ident):
-        return
+        return False
     with Session(ctx.engine) as s:
-        s.merge(AppMember(identity=ident, household_id=household_id))
+        row = s.get(AppMember, ident)
+        if row is not None:
+            if row.household_id != household_id:
+                log.warning("app identity …%s already belongs to bank household %s", ident[-6:], row.household_id)
+            return row.household_id == household_id
+        s.add(AppMember(identity=ident, household_id=household_id))
         s.commit()
+        return True
 
 
 router = APIRouter()
@@ -162,17 +218,15 @@ async def signup_page() -> str:
     return (Path(__file__).parent / "demo" / "static" / "signup.html").read_text()
 
 
-@router.post("/signup")
+@router.post("/signup", dependencies=[Depends(require_demo_token)])  # each sign-up uses a Photon seat
 async def signup(request: Request, body: SignupBody):
     ctx = request.app.state.ctx
-    token = ctx.settings.demo_token
-    if token:  # each sign-up uses a Photon seat, so guard it like the demo controls
-        import hmac
-        given = request.headers.get("x-demo-token") or request.query_params.get("token") or ""
-        if not hmac.compare_digest(given, token):
-            raise HTTPException(401, "This server needs the app's access token.")
+    # The identity comes from the app's verified SpacetimeDB token; a body value is only trusted from
+    # the operator (local demo), since anyone could type someone else's identity.
+    caller = await app_caller(request, required=False)
+    identity = caller.identity if caller else (body.app_identity if is_operator(request) else None)
     try:
-        r = await sign_up(ctx, body.first_name, body.last_name, body.phone, body.app_invite_code, body.app_identity)
+        r = await sign_up(ctx, body.first_name, body.last_name, body.phone, body.app_invite_code, identity)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {

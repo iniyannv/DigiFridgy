@@ -18,13 +18,24 @@ nonisolated struct NormalizedReceiptLine: Hashable, Sendable {
 /// Turns OCR'd receipt lines into purchasable line items.
 /// Keeps `NAME ... PRICE` lines, drops totals / tax / payment / header lines, applies `2 @ 1.99` quantities.
 nonisolated struct ReceiptParser: Sendable {
+    /// Words that only ever appear on non-item lines (matched as whole words anywhere in the line).
+    /// "total", "chip" and "member" are *not* here: they are real product words ("FAGE TOTAL 0%",
+    /// "CHOC CHIP COOKIES", "MEMBER'S MARK EGGS"), so `dropPatterns` only matches them in receipt phrases.
     static let dropWords: [String] = [
-        "subtotal", "sub total", "total", "tax", "balance", "change", "cash", "visa", "mastercard", "amex",
+        "subtotal", "sub total", "tax", "balance", "change", "cash", "visa", "mastercard", "amex",
         "discover", "debit", "credit", "card", "tend", "tender", "payment", "approved", "auth", "ref",
-        "thank", "thanks", "receipt", "savings", "you saved", "member", "rewards", "coupon", "discount",
+        "thank", "thanks", "receipt", "savings", "you saved", "rewards", "coupon", "discount",
         "items sold", "item count", "st#", "tr#", "op#", "te#", "tc#", "terminal", "cashier", "manager",
-        "store", "survey", "www", ".com", "points", "fuel", "account", "chip", "aid", "invoice", "due",
+        "store", "survey", "www", ".com", "points", "fuel", "account", "aid", "invoice", "due",
         "price you pay", "bottle deposit", "bag fee", "bag charge", "eft", "us debit",
+    ]
+
+    /// Receipt phrases built from ordinary words (lowercased line).
+    static let dropPatterns: [String] = [
+        #"^\W*(sub\s*|grand\s+|order\s+|net\s+|sale\s+)?total\b"#,      // "TOTAL 24.23", "GRAND TOTAL"
+        #"\btotal\s+(due|tax|savings|sale|purchase|items?|paid)\b"#,
+        #"\bchip\s*(read|card|insert(ed)?)\b"#, #"\bemv\b"#,             // card-reader lines
+        #"\bmember\s*(#|id\b|no\b|number\b|savings\b|price\b|since\b|account\b)"#,
     ]
 
     private static var itemPattern: Regex<(Substring, name: Substring, price: Substring)> { /^(?<name>.*?[A-Za-z].*?)\s+\$?(?<price>-?\d{1,4}[.,]\d{2})(?:\s*-)?(?:\s+[A-Z]{1,2})?\s*$/ }
@@ -38,7 +49,11 @@ nonisolated struct ReceiptParser: Sendable {
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard line.count >= 3 else { continue }
-            if isDropLine(line) { continue }
+            if isDropLine(line) {
+                // A quantity only applies to the item line right after it.
+                pendingQty = nil
+                continue
+            }
 
             // Standalone quantity line: "2 @ 1.99" / "2 AT 1 FOR 1.99"
             if let m = line.firstMatch(of: Self.qtyOnlyPattern), !hasNameText(afterQuantityIn: line) {
@@ -55,9 +70,12 @@ nonisolated struct ReceiptParser: Sendable {
             }
 
             // Negative amounts ("0.50-") are coupons / savings.
-            if line.range(of: #"\d[.,]\d{2}\s*-"#, options: .regularExpression) != nil { continue }
-            guard let m = line.firstMatch(of: Self.itemPattern) else { continue }
-            guard let price = Self.price(String(m.output.price)), price > 0 else { continue }  // skip coupons
+            if line.range(of: #"\d[.,]\d{2}\s*-"#, options: .regularExpression) != nil { pendingQty = nil; continue }
+            guard let m = line.firstMatch(of: Self.itemPattern),
+                  let price = Self.price(String(m.output.price)), price > 0 else {  // skip coupons
+                pendingQty = nil
+                continue
+            }
             var name = String(m.output.name)
             var qty = pendingQty ?? 1
             pendingQty = nil
@@ -96,10 +114,16 @@ nonisolated struct ReceiptParser: Sendable {
                 return true
             }
         }
+        let trimmedLower = lower.trimmingCharacters(in: .whitespaces)
+        if Self.dropPatterns.contains(where: { trimmedLower.range(of: $0, options: .regularExpression) != nil }) {
+            return true
+        }
         // Phone numbers, dates, times
         if line.range(of: #"\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}"#, options: .regularExpression) != nil { return true }
         if line.range(of: #"\d{1,2}/\d{1,2}/\d{2,4}"#, options: .regularExpression) != nil { return true }
-        if line.range(of: #"\d{1,2}:\d{2}"#, options: .regularExpression) != nil { return true }
+        // A time ("18:42") marks a header/footer line, unless the line ends in a price (then it's an item).
+        if line.range(of: #"\d{1,2}:\d{2}"#, options: .regularExpression) != nil,
+           line.firstMatch(of: Self.itemPattern) == nil { return true }
         return false
     }
 

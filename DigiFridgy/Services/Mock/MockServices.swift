@@ -268,10 +268,20 @@ final class MockReceiptNormalizer: ReceiptNormalizer {
 
 final class MockNotificationService: NotificationService {
     private(set) var log: [String] = []
+    /// Reminder ids as `reconcile` would leave them.
+    private(set) var reminders: [String: ReminderSpec] = [:]
     func requestAuthorization() async -> Bool { true }
-    func scheduleExpiryReminder(for item: FridgeItem) { log.append("schedule \(item.id)") }
-    func cancelExpiryReminder(itemId: String) { log.append("cancel \(itemId)") }
-    func removeExpiryReminders(except keep: Set<String>) async { log.append("keep \(keep.sorted())") }
+    func isAuthorized() async -> Bool { true }
+    func reconcile(items: [FridgeItem]) async {
+        let (add, remove) = ReminderPlanner.diff(pending: reminders, desired: ReminderPlanner.desired(for: items))
+        remove.forEach { reminders[$0] = nil }
+        reminders.merge(add) { $1 }
+        log.append("reconcile +\(add.count) -\(remove.count)")
+    }
+    func removeAllReminders() {
+        reminders = [:]
+        log.append("remove all")
+    }
     func notifyNow(id: String, title: String, body: String) { log.append("notify \(title)") }
 }
 

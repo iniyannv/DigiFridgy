@@ -31,7 +31,7 @@ def build_ctx(settings: Settings | None = None) -> Ctx:
 
     settings = settings or Settings.from_env()
     engine = make_engine(settings.database_url)
-    clock = Clock(settings.tz, engine)
+    clock = Clock(settings.tz, engine, time_skip=settings.demo_mode)
     nessie = (MockNessieClient(settings.mock_nessie_path) if settings.use_mock_nessie
               else NessieClient(settings.nessie_api_key, settings.nessie_base_url))
     photon = (MockPhotonClient(settings.photon_agent_handle or "+15550100000") if settings.use_mock_photon

@@ -10,8 +10,8 @@ so "used 1 milk" over iMessage and "+1 eggs" in the app both survive. Only count
 exists; item details (name, expiry the user set in the app) are never overwritten by the backend.
 
 Each backend household acts as an ordinary member of an app household through its own SpacetimeDB
-identity, so the server module needs no special access. It creates an app household on first sync
-(members get the invite code to join from the app), or joins an existing one with `LINK <code>`.
+identity, so the server module needs no special access. A household joins in only after it opts in:
+APP (or the welcome text) creates an app household, `LINK <code>` or signup with a code joins one.
 """
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
@@ -32,6 +34,7 @@ from ..fridge.matching import best_catalog_match
 from ..models import (ApprovalLink, Household, Item, ListClaim, PendingAction, ProcessedPurchase,
                       ShoppingListItem, SpaceItemLink, SpaceListLink, SpaceSyncState, SpacetimeLink, UsageLog)
 from ..photon.outbound import notify_household
+from .client import is_unknown_reducer, not_applied
 
 log = logging.getLogger("spacetime")
 
@@ -138,7 +141,62 @@ def _external_id(app_household_id: str, unit: Item) -> str:
     return f"bank-{digest}"
 
 
+# ---------- per-process bridge memory ----------
+
+APP_MAX_COUNT = 999             # the module's bound for an item's count
+MAX_UNITS_PER_ITEM = 100        # backend unit rows the bridge will create for one app item
+MAX_NEW_UNITS_PER_ROUND = 500   # ... and per household per round; the rest waits for the next round
+LOG_USE_CHUNK = 1000            # log_use accepts qty 1..=1000
+MISSING_REDUCER_TTL = 600.0     # seconds before retrying a reducer the published module didn't have
+_MAX_MS = 4_102_444_800_000     # 2100-01-01: later (or negative) timestamps from the app are ignored
+
+
+@dataclass
+class _BridgeState:
+    """Kept on the Ctx, so each app instance (and each test) has its own."""
+    # (household, external id) -> (expected, target) of an app write whose outcome is unknown
+    # (timeout after sending). The next round checks which of the two the app shows.
+    pending: dict[tuple[int, str], tuple[int, int]] = field(default_factory=dict)
+    # (household, reducer) -> monotonic time to try that reducer again
+    missing: dict[tuple[int, str], float] = field(default_factory=dict)
+    dirty: set[int] = field(default_factory=set)   # households whose app subscription fired
+    full: bool = False                              # someone asked for a round of every household
+
+
+def _state(ctx: Ctx) -> _BridgeState:
+    st = getattr(ctx, "_spacetime_bridge", None)
+    if st is None:
+        st = _BridgeState()
+        ctx._spacetime_bridge = st
+    return st
+
+
+def _reducer_missing(ctx: Ctx, household_id: int, reducer: str) -> bool:
+    missing = _state(ctx).missing
+    until = missing.get((household_id, reducer))
+    if until is None:
+        return False
+    if time.monotonic() >= until:
+        del missing[(household_id, reducer)]
+        return False
+    return True
+
+
+def _mark_missing(ctx: Ctx, household_id: int, reducer: str) -> None:
+    _state(ctx).missing[(household_id, reducer)] = time.monotonic() + MISSING_REDUCER_TTL
+
+
+def _ms(v) -> float | None:
+    """A millisecond timestamp from app JSON, or None if it's missing or nonsense."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+        return None
+    return float(v) if 0 <= v <= _MAX_MS else None
+
+
 # ---------- linking ----------
+#
+# A backend household syncs with the app only after it opted in: APP (or the welcome text), LINK <code>,
+# or signing up with an app invite code. Those create the `SpacetimeLink`; the sync never does.
 
 async def ensure_link(ctx: Ctx, hh: Household, announce: bool = True) -> SpacetimeLink:
     with Session(ctx.engine) as s:
@@ -150,8 +208,9 @@ async def ensure_link(ctx: Ctx, hh: Household, announce: bool = True) -> Spaceti
         identity, token = await st.create_identity()
         link = SpacetimeLink(household_id=hh.id, identity=identity, token=token, linked_at=ctx.clock.real_now())
     await st.call(link.token, "create_household", [str(uuid.uuid4()), hh.name or "Our Fridge"])
+    _reset_sync_rows(ctx, hh.id)
     await _refresh_household(ctx, link)
-    log.info("household %s linked to app household %s (code %s)", hh.id, link.app_household_id, link.invite_code)
+    log.info("household %s linked to app household %s", hh.id, link.app_household_id)
     if announce:
         await notify_household(ctx, hh.id, app_invite_text(link.invite_code), f"app-link:{link.app_household_id}")
     return link
@@ -166,6 +225,18 @@ async def _refresh_household(ctx: Ctx, link: SpacetimeLink) -> None:
     with Session(ctx.engine) as s:
         s.merge(link)
         s.commit()
+
+
+def _reset_sync_rows(ctx: Ctx, household_id: int) -> None:
+    """Forgets the merge base for this household (it now shares a different app household)."""
+    with Session(ctx.engine) as s:
+        for model in (SpaceSyncState, SpaceItemLink, SpaceListLink):
+            for row in s.exec(select(model).where(model.household_id == household_id)):
+                s.delete(row)
+        s.commit()
+    pending = _state(ctx).pending
+    for key in [k for k in pending if k[0] == household_id]:
+        del pending[key]
 
 
 def app_invite_text(code: str) -> str:
@@ -186,7 +257,10 @@ async def link_to_code(ctx: Ctx, hh: Household, code: str) -> str:
 
 async def join_app_household(ctx: Ctx, hh: Household, code: str) -> tuple[bool, str]:
     """Like `link_to_code`, but also says whether it worked. A household that was never linked
-    joins directly, so it doesn't create (and announce) an app household of its own first."""
+    joins directly, so it doesn't create (and announce) an app household of its own first.
+
+    `join_household` moves the identity out of its current app household only when the code is good,
+    so a typo keeps the current link, its items and its sync state exactly as they were."""
     if ctx.spacetime is None:
         return False, "The app connection isn't set up on this server."
     code = code.strip().upper()
@@ -200,25 +274,14 @@ async def join_app_household(ctx: Ctx, hh: Household, code: str) -> tuple[bool, 
         elif link.app_household_id and code == link.invite_code:
             return True, f"Already linked to that app household ({code})."
         try:
-            if link.app_household_id:
-                await ctx.spacetime.call(link.token, "leave_household", [])
             await ctx.spacetime.call(link.token, "join_household", [code])
         except Exception as e:
-            # Joining failed: the next sync gives this household an app household of its own.
-            log.warning("link to %s failed: %s", code, e)
-            link.app_household_id = ""
-            with Session(ctx.engine) as s:
-                s.merge(link)
-                s.commit()
+            # A brand-new link isn't saved: this household didn't get an app household it never asked for.
+            log.warning("household %s: joining an app household failed: %s", hh.id, e)
+            if "too many" in str(e).lower():
+                return False, "Too many wrong codes. Wait an hour, then try the code from the app's Settings."
             return False, f"Couldn't find an app household with code {code}. Check the code in the app's Settings."
-        with Session(ctx.engine) as s:
-            for row in s.exec(select(SpaceSyncState).where(SpaceSyncState.household_id == hh.id)):
-                s.delete(row)
-            for row in s.exec(select(SpaceItemLink).where(SpaceItemLink.household_id == hh.id)):
-                s.delete(row)
-            for row in s.exec(select(SpaceListLink).where(SpaceListLink.household_id == hh.id)):
-                s.delete(row)
-            s.commit()
+        _reset_sync_rows(ctx, hh.id)
         await _refresh_household(ctx, link)
         await sync_household(ctx, hh)
     return True, f"🔗 Linked! This fridge now shares items with the app household using code {code}."
@@ -232,16 +295,92 @@ def household_for_app(ctx: Ctx, app_household_id: str) -> Household | None:
         return s.get(Household, link.household_id) if link else None
 
 
+async def _active_link(ctx: Ctx, hh: Household) -> SpacetimeLink | None:
+    with Session(ctx.engine) as s:
+        link = s.get(SpacetimeLink, hh.id)
+    if link is None:
+        return None                       # never opted in
+    if not link.app_household_id:
+        link = await ensure_link(ctx, hh)  # opted in, but has no app household yet
+    return link
+
+
+def _note_household(ctx: Ctx, hh: Household, link: SpacetimeLink, row: dict) -> None:
+    """Keeps the stored invite code current (leaving or a kick rotates it) and notices a move to
+    another app household (a join whose follow-up read failed), which invalidates the merge base."""
+    app_id, code = str(row.get("id") or ""), str(row.get("invite_code") or "")
+    changed = False
+    if app_id and app_id != link.app_household_id:
+        log.warning("household %s is now in a different app household; starting a fresh sync", hh.id)
+        _reset_sync_rows(ctx, hh.id)
+        link.app_household_id = app_id
+        changed = True
+    if code and code != link.invite_code:
+        link.invite_code = code
+        changed = True
+    if changed:
+        with Session(ctx.engine) as s:
+            s.merge(link)
+            s.commit()
+
+
 # ---------- sync ----------
 
+def _parse_items(rows: list) -> tuple[dict[str, tuple[int, int, dict]], set[str]]:
+    """my_items rows -> {id: (count clamped to the module's bound, count as sent, data)}, plus the ids
+    of malformed rows. A malformed row is left out of the round entirely (not read as "deleted")."""
+    app: dict[str, tuple[int, int, dict]] = {}
+    bad: set[str] = set()
+    for r in rows:
+        ext = r.get("id") if isinstance(r, dict) else None
+        if not isinstance(ext, str) or not ext or len(ext) > 64:
+            log.warning("skipping an app item row without a usable id")
+            continue
+        try:
+            raw = r["count"]
+            if isinstance(raw, bool) or not isinstance(raw, int):
+                raise ValueError(f"count is {type(raw).__name__}")
+            data = json.loads(r["data"])
+            if not isinstance(data, dict):
+                raise ValueError("data is not a JSON object")
+        except (KeyError, TypeError, ValueError) as e:
+            log.warning("skipping malformed app item %s: %s", ext, e)
+            bad.add(ext)
+            continue
+        app[ext] = (max(0, min(raw, APP_MAX_COUNT)), raw, data)
+    return app, bad
+
+
 async def sync_household(ctx: Ctx, hh: Household) -> dict:
+    link = await _active_link(ctx, hh)
+    if link is None:
+        return {}
     st = ctx.spacetime
-    link = await ensure_link(ctx, hh)
     rows = await st.query(link.token, "SELECT * FROM my_items")
-    app = {r["id"]: (int(r["count"]), r["data"]) for r in rows}
+    # Checked after reading the items: if this identity isn't a member any more (kicked, the database
+    # was wiped), my_items is empty, and that must not read as "everything was used up".
+    household_rows = await st.query(link.token, "SELECT * FROM my_household")
+    if not household_rows:
+        log.warning("household %s isn't a member of its app household any more; skipping this round", hh.id)
+        return {"not_member": 1}
+    _note_household(ctx, hh, link, household_rows[0])
+    app, bad = _parse_items(rows)
     now = ctx.clock.now()
-    stats = {"exported": 0, "imported": 0, "app_updates": 0, "backend_updates": 0}
-    app_calls: list[tuple[str, list, str, int]] = []  # (reducer, args, external_id, target)
+    stats = {"exported": 0, "imported": 0, "app_updates": 0, "backend_updates": 0, "skipped": len(bad)}
+    # (reducer, args, external_id, expected app count, target app count)
+    app_calls: list[tuple[str, list, str, int, int]] = []
+
+    # Writes from earlier rounds that timed out: if the app shows the target, the write landed.
+    pending = _state(ctx).pending
+    landed: dict[str, int] = {}
+    for key in [k for k in pending if k[0] == hh.id]:
+        expected, target = pending.pop(key)
+        ext = key[1]
+        if ext in bad:
+            continue
+        current = app[ext][1] if ext in app else 0
+        if current == target and current != expected:
+            landed[ext] = target
 
     with Session(ctx.engine) as s:
         present = list(s.exec(select(Item).where(Item.household_id == hh.id, Item.status.in_(PRESENT))))
@@ -256,15 +395,21 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
             groups.setdefault(ext, []).append(unit)
         states = {r.external_id: r for r in s.exec(
             select(SpaceSyncState).where(SpaceSyncState.household_id == hh.id))}
+        for ext, target in landed.items():
+            if ext in states:
+                states[ext].app_count = target
         # Templates for re-adding units to a group whose units are all gone.
         all_links = {}
         for l in s.exec(select(SpaceItemLink).where(SpaceItemLink.household_id == hh.id)):
             all_links.setdefault(l.external_id, l.item_id)
 
-        for ext in set(app) | set(groups) | set(states):
+        budget = MAX_NEW_UNITS_PER_ROUND
+        for ext in sorted(set(app) | set(groups) | set(states)):
+            if ext in bad:
+                continue
             units = groups.get(ext, [])
             be_count = len(units)
-            app_count, data = app.get(ext, (0, None))
+            app_count, sent_count, data = app.get(ext, (0, 0, None))
             state = states.get(ext)
             if state is None:
                 if data is not None and be_count == 0:
@@ -275,22 +420,32 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                     new = max(app_count, be_count)       # both exist, no history (e.g. crash mid-sync)
             else:
                 new = state.count + (app_count - state.app_count) + (be_count - state.count)
-            new = max(0, new)
+            # Never more units than the cap from the app (but never drop units the backend has).
+            new = min(max(0, new), max(be_count, MAX_UNITS_PER_ITEM))
+            template = units[0] if units else (s.get(Item, all_links[ext]) if ext in all_links else None)
 
             # Backend side
             if new < be_count:
-                expired = [u for u in units if u.status == "expired"]
                 fresh = sorted((u for u in units if u.status == "fresh"), key=lambda u: u.expires_at)
-                for u in (expired + fresh)[: be_count - new]:
-                    # Expired units were already counted as waste; removing them in the app = tossed.
-                    u.status = "tossed" if u.status == "expired" else "used"
+                expired = [u for u in units if u.status == "expired"]
+                if data is None:
+                    # Removed in the app: expired units were thrown out (already counted as waste).
+                    order = [(u, "tossed") for u in expired] + [(u, "used") for u in fresh]
+                else:
+                    # Count lowered in the app: someone ate it. Fresh units first, never counted as waste.
+                    order = [(u, "used") for u in fresh + expired]
+                for u, status in order[: be_count - new]:
+                    u.status = status
                     u.status_at = now
                     s.add(u)
                 stats["backend_updates"] += 1
             elif new > be_count:
-                template = units[0] if units else (s.get(Item, all_links[ext]) if ext in all_links else None)
                 if template is None and data is None:
                     continue
+                if new - be_count > budget:
+                    stats["skipped"] += 1                # state untouched: next round picks it up
+                    continue
+                budget -= new - be_count
                 for _ in range(new - be_count):
                     unit = _new_unit(ctx, hh.id, template, data, now)
                     s.add(unit)
@@ -303,16 +458,14 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                 _apply_app_expiry(ctx, s, hh.id, ext, data)
 
             # App side (network calls run after the local commit)
-            template = units[0] if units else (s.get(Item, all_links[ext]) if ext in all_links else None)
+            if template is None and units:
+                template = units[0]
             if data is None and new > 0 and template is not None:
                 item_json = _app_item_json(ctx, ext, template, new, _store_name(s, template))
-                app_calls.append(("upsert_item", [ext, new, item_json], ext, new))
+                app_calls.append(("upsert_item", [ext, new, item_json], ext, 0, new))
                 stats["exported"] += 1
-            elif data is not None and new != app_count:
-                if new == 0:
-                    app_calls.append(("delete_item", [ext], ext, 0))
-                else:
-                    app_calls.append(("increment_count", [ext, new - app_count], ext, new))
+            elif data is not None and new != sent_count:
+                app_calls.append(("set_count_if", [ext, sent_count, new], ext, sent_count, new))
                 stats["app_updates"] += 1
 
             row = state or SpaceSyncState(external_id=ext, household_id=hh.id)
@@ -325,10 +478,19 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                 s.add(row)
         s.commit()
 
-    for reducer, args, ext, target in app_calls:
+    # Uses first: log_use needs the item to still exist in the app, and the writes below may remove it.
+    stats["uses_logged"] = await push_uses(ctx, hh, link)
+    for reducer, args, ext, expected, target in app_calls:
         try:
-            await st.call(link.token, reducer, args)
+            if reducer == "set_count_if":
+                await _set_app_count(ctx, hh, link, ext, expected, target)
+            else:
+                await st.call(link.token, reducer, args)
         except Exception as e:
+            if not not_applied(e):
+                pending[(hh.id, ext)] = (expected, target)   # may have landed: the next round checks
+            elif "count changed" in str(e).lower():
+                request_sync(ctx, hh.id)                     # edited in the app meanwhile: merge again
             log.warning("SpacetimeDB %s(%s) failed: %s", reducer, ext, e)
             continue
         with Session(ctx.engine) as s:
@@ -342,9 +504,28 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
                 s.add(row)
             s.commit()
     stats.update(await sync_list(ctx, hh, link))
-    stats["uses_logged"] = await push_uses(ctx, hh, link)
     stats["approvals"] = await sync_approvals(ctx, hh, link)
     return stats
+
+
+async def _set_app_count(ctx: Ctx, hh: Household, link: SpacetimeLink, ext: str, expected: int, new: int) -> None:
+    """Sets the app count to `new` only if it's still `expected` (absolute, so a retry can't apply a
+    change twice, and a +1 tapped meanwhile isn't overwritten)."""
+    st = ctx.spacetime
+    if not _reducer_missing(ctx, hh.id, "set_count_if"):
+        try:
+            await st.call(link.token, "set_count_if", [ext, expected, new])
+            return
+        except Exception as e:
+            if not is_unknown_reducer(e):
+                raise
+            _mark_missing(ctx, hh.id, "set_count_if")
+            log.info("SpacetimeDB module has no set_count_if yet; using relative writes (publish server/)")
+    # Older module: relative writes, which a concurrent app edit or a retried timeout can skew.
+    if new == 0:
+        await st.call(link.token, "delete_item", [ext])
+    else:
+        await st.call(link.token, "increment_count", [ext, new - expected])
 
 
 # ---------- who used what ----------
@@ -352,11 +533,9 @@ async def sync_household(ctx: Ctx, hh: Household) -> dict:
 # USED over iMessage goes into SpacetimeDB's shared `item_use` log (reducer `log_use`), next to the
 # app's −1 taps (`use_item`), so every member sees who used what and settle-up has one record.
 
-_log_use_missing = False  # the published module predates `log_use`: don't retry every round
-
-
 async def push_uses(ctx: Ctx, hh: Household, link: SpacetimeLink) -> int:
-    global _log_use_missing
+    if _reducer_missing(ctx, hh.id, "log_use"):
+        return 0  # the published module predates log_use: try again after the TTL
     with Session(ctx.engine) as s:
         rows = list(s.exec(select(UsageLog).where(UsageLog.household_id == hh.id, UsageLog.logged_at == None)))  # noqa: E711
         if not rows:
@@ -370,28 +549,32 @@ async def push_uses(ctx: Ctx, hh: Household, link: SpacetimeLink) -> int:
             if ext is None or unit is None:
                 continue  # not in the app (yet); the next round picks it up once linked
             groups.setdefault(ext, (unit.name, []))[1].append(r.id)
-    if _log_use_missing:
-        sent = [i for _, ids in groups.values() for i in ids]
-    else:
-        sent = []
+    sent: list[int] = []
+    try:
         for ext, (name, ids) in groups.items():
-            try:
-                await ctx.spacetime.call(link.token, "log_use", [ext, len(ids), name])
-                sent += ids
-            except Exception as e:
-                if "log_use" in str(e) or "No such reducer" in str(e) or "404" in str(e):
-                    _log_use_missing = True
-                    log.info("SpacetimeDB module has no log_use yet; publish server/ to share iMessage uses")
-                    sent = [i for _, i2 in groups.values() for i in i2]
+            for i in range(0, len(ids), LOG_USE_CHUNK):
+                chunk = ids[i:i + LOG_USE_CHUNK]
+                try:
+                    await ctx.spacetime.call(link.token, "log_use", [ext, len(chunk), name])
+                except Exception as e:
+                    if is_unknown_reducer(e):
+                        _mark_missing(ctx, hh.id, "log_use")
+                        log.info("SpacetimeDB module has no log_use yet; publish server/ to share iMessage uses")
+                        return len(sent)
+                    if not_applied(e) and "not found" in str(e).lower():
+                        sent += chunk  # the item is gone from the app: nothing there to attribute it to
+                        continue
+                    log.warning("SpacetimeDB log_use(%s) failed: %s", ext, e)
                     break
-                log.warning("SpacetimeDB log_use(%s) failed: %s", ext, e)
-    if sent:
-        with Session(ctx.engine) as s:
-            for row in s.exec(select(UsageLog).where(UsageLog.id.in_(sent))):
-                row.logged_at = ctx.clock.now()
-                s.add(row)
-            s.commit()
-    return len(sent)
+                sent += chunk
+        return len(sent)
+    finally:
+        if sent:
+            with Session(ctx.engine) as s:
+                for row in s.exec(select(UsageLog).where(UsageLog.id.in_(sent))):
+                    row.logged_at = ctx.clock.now()
+                    s.add(row)
+                s.commit()
 
 
 # ---------- shopping list ----------
@@ -418,9 +601,13 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
     app: dict[str, dict] = {}
     for r in await st.query(link.token, "SELECT * FROM my_shopping"):
         try:
-            app[r["id"]] = json.loads(r["data"])
-        except (TypeError, ValueError):
-            continue
+            entry = json.loads(r["data"])
+            if isinstance(r["id"], str) and isinstance(entry, dict):
+                app[r["id"]] = entry
+                continue
+        except (KeyError, TypeError, ValueError):
+            pass
+        log.warning("skipping a malformed app shopping-list row")
     stats = {"list_exported": 0, "list_imported": 0, "list_updates": 0}
     saves: list[tuple[int, str, str, bool]] = []    # (row id, ext, json, done): link is written on success
     claim_pushes: list[tuple[int, str, str, str]] = []  # (row id, ext, json, claim): synced on success
@@ -478,14 +665,16 @@ async def sync_list(ctx: Ctx, hh: Household, link: SpacetimeLink) -> dict:
         for ext, entry in app.items():
             if ext in links:
                 continue
-            name = str(entry.get("name") or "").strip()[:60]
+            name = entry.get("name")
+            name = name.strip()[:60] if isinstance(name, str) else ""
             if not name:
                 continue
             done = bool(entry.get("done"))
             row = open_unlinked.pop(name.lower(), None)
             if row is None:
                 info = best_catalog_match(name)
-                added = _from_ms(ctx, entry["addedAt"]) if entry.get("addedAt") else now
+                added_ms = _ms(entry.get("addedAt"))
+                added = _from_ms(ctx, added_ms) if added_ms else now
                 row = ShoppingListItem(household_id=hh.id, name=name, sku=info.sku if info else None,
                                        source="app", confirmed=True, added_at=added, done=done)
                 stats["list_imported"] += 1
@@ -626,13 +815,14 @@ async def sync_approvals(ctx: Ctx, hh: Household, link: SpacetimeLink) -> int:
     return changed
 
 
-def _new_unit(ctx: Ctx, household_id: int, template: Item | None, data: str | None, now: datetime) -> Item:
+def _new_unit(ctx: Ctx, household_id: int, template: Item | None, data: dict | None, now: datetime) -> Item:
     if data is not None and (template is None or template.source_purchase_id is None):
-        app = json.loads(data)
-        name = app.get("name") or "item"
+        name = data.get("name")
+        name = name.strip()[:80] if isinstance(name, str) and name.strip() else "item"
         info = find_by_words(name) or lookup(name.lower().replace(" ", "_"))
-        expires = _from_ms(ctx, app["expiresAt"]) if app.get("expiresAt") else now + timedelta(days=info.shelf_life_days)
-        added = _from_ms(ctx, app["addedAt"]) if app.get("addedAt") else now
+        expires_ms, added_ms = _ms(data.get("expiresAt")), _ms(data.get("addedAt"))
+        expires = _from_ms(ctx, expires_ms) if expires_ms else now + timedelta(days=info.shelf_life_days)
+        added = _from_ms(ctx, added_ms) if added_ms else now
         return Item(household_id=household_id, sku=info.sku, name=name.lower(), category=info.category,
                     location=info.location, emoji=info.emoji, price=0.0, purchased_at=added, expires_at=expires,
                     status="fresh" if expires > now else "expired")
@@ -643,11 +833,11 @@ def _new_unit(ctx: Ctx, household_id: int, template: Item | None, data: str | No
                 source_purchase_id=t.source_purchase_id)
 
 
-def _apply_app_expiry(ctx: Ctx, s: Session, household_id: int, ext: str, data: str) -> None:
-    app = json.loads(data)
-    if app.get("expiryIsEstimated", True) or not app.get("expiresAt"):
+def _apply_app_expiry(ctx: Ctx, s: Session, household_id: int, ext: str, data: dict) -> None:
+    expires_ms = _ms(data.get("expiresAt"))
+    if data.get("expiryIsEstimated", True) or not expires_ms:
         return
-    expires = _from_ms(ctx, app["expiresAt"])
+    expires = _from_ms(ctx, expires_ms)
     ids = [l.item_id for l in s.exec(select(SpaceItemLink).where(SpaceItemLink.household_id == household_id,
                                                                   SpaceItemLink.external_id == ext))]
     for unit in s.exec(select(Item).where(Item.id.in_(ids), Item.status == "fresh")):
@@ -656,11 +846,15 @@ def _apply_app_expiry(ctx: Ctx, s: Session, household_id: int, ext: str, data: s
             s.add(unit)
 
 
-async def sync_all(ctx: Ctx) -> dict:
+async def sync_all(ctx: Ctx, only: set[int] | None = None) -> dict:
+    """Syncs every opted-in household (one with a `SpacetimeLink`), or just those in `only`."""
     if ctx.spacetime is None:
         return {}
     with Session(ctx.engine) as s:
-        households = list(s.exec(select(Household)))
+        ids = sorted(l.household_id for l in s.exec(select(SpacetimeLink)))
+        if only is not None:
+            ids = [i for i in ids if i in only]
+        households = [hh for hh in (s.get(Household, i) for i in ids) if hh is not None]
     totals: dict = {}
     for hh in households:
         try:
@@ -674,14 +868,19 @@ async def sync_all(ctx: Ctx) -> dict:
 _lock = asyncio.Lock()
 
 
-async def sync_now(ctx: Ctx) -> dict:
+async def sync_now(ctx: Ctx, only: set[int] | None = None) -> dict:
     async with _lock:
-        return await sync_all(ctx)
+        return await sync_all(ctx, only)
 
 
-def request_sync(ctx: Ctx) -> None:
+def request_sync(ctx: Ctx, household_id: int | None = None) -> None:
     """Runs a sync round now instead of at the next interval (after an iMessage command, or when the
-    app changed the fridge or the list)."""
+    app changed the fridge or the list). With `household_id`, only that household is synced."""
+    st = _state(ctx)
+    if household_id is None:
+        st.full = True
+    else:
+        st.dirty.add(household_id)
     if ctx.spacetime_wake is not None:
         ctx.spacetime_wake.set()
 
@@ -689,22 +888,31 @@ def request_sync(ctx: Ctx) -> None:
 async def sync_loop(ctx: Ctx) -> None:
     """Syncs whenever something changes (see `request_sync` and `watch_loop`), and on a timer as a fallback."""
     wake = ctx.spacetime_wake = asyncio.Event()
+    st = _state(ctx)
+    full = True
     while True:
+        if full:
+            st.dirty.clear()
+            only = None
+        else:
+            only, st.dirty = st.dirty, set()
         try:
-            await sync_now(ctx)
+            await sync_now(ctx, only)
         except Exception:
             log.exception("SpacetimeDB sync loop error")
         try:
             await asyncio.wait_for(wake.wait(), timeout=ctx.settings.spacetime_interval)
             await asyncio.sleep(0.15)  # one round for a burst of changes
+            full = st.full
         except asyncio.TimeoutError:
-            pass
+            full = True
+        st.full = False
         wake.clear()
 
 
 async def watch_loop(ctx: Ctx) -> None:
-    """One live SpacetimeDB subscription per linked household: an app change wakes the sync loop
-    within a fraction of a second instead of waiting for the next poll."""
+    """One live SpacetimeDB subscription per linked household: an app change wakes the sync loop for
+    that household within a fraction of a second instead of waiting for the next poll."""
     st = ctx.spacetime
     if st is None or st.is_mock:
         return
@@ -723,8 +931,9 @@ async def watch_loop(ctx: Ctx) -> None:
                     del watchers[hid]
             for hid, key in wanted.items():
                 if hid not in watchers:
-                    task = asyncio.create_task(st.watch(key.rsplit("|", 1)[0], queries, lambda: request_sync(ctx)),
-                                               name=f"spacetime-watch-{hid}")
+                    task = asyncio.create_task(
+                        st.watch(key.rsplit("|", 1)[0], queries, lambda hid=hid: request_sync(ctx, hid)),
+                        name=f"spacetime-watch-{hid}")
                     watchers[hid] = (key, task)
             await asyncio.sleep(5)
     finally:

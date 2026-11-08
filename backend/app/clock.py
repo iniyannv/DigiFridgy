@@ -14,12 +14,15 @@ from .models import ClockOffset
 
 
 class Clock:
-    def __init__(self, tz: ZoneInfo, engine=None, base: datetime | None = None):
+    def __init__(self, tz: ZoneInfo, engine=None, base: datetime | None = None, time_skip: bool = True):
         self.tz = tz
         self.engine = engine
         self.base = base  # fixed "real now" for tests (naive UTC)
         self.offset = timedelta(0)
-        if engine is not None:
+        # The demo time-skip only exists in DEMO_MODE: a database reused for a real run must not
+        # carry an offset into transfer dates and budget weeks.
+        self.time_skip = time_skip
+        if engine is not None and time_skip:
             with Session(engine) as s:
                 row = s.get(ClockOffset, 1)
                 if row:
@@ -54,6 +57,10 @@ class Clock:
         return d - timedelta(days=d.weekday())  # Monday
 
     def advance(self, days: float = 0, hours: float = 0) -> None:
+        if not self.time_skip:
+            raise RuntimeError("time-skip is only available in DEMO_MODE")
+        if days < 0 or hours < 0:
+            raise ValueError("time only moves forward")  # a rewind would reopen expired offers
         self.offset += timedelta(days=days, hours=hours)
         self._save()
 

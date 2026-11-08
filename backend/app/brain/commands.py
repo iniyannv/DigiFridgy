@@ -17,7 +17,7 @@ from ..models import Household, Item, Member, PendingAction, ProcessedPurchase, 
 from ..photon.client import Inbound
 from ..photon.outbound import send_reply
 from . import copy, pending
-from .router import Intent, route
+from .router import Intent, _norm, route
 
 log = logging.getLogger("commands")
 RECIPES = json.loads(Path(__file__).with_name("recipes.json").read_text())
@@ -63,15 +63,19 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
         await handle_group_message(ctx, m)
         return
     intent = await route(m.text, ctx.llm) if m.text else Intent(name="not_text")
+    # Same form as sign-up stores ("+14695550123"), so one person never becomes two members.
+    from ..signup import normalize_handle
+    handle = normalize_handle(m.sender_handle) or m.sender_handle
     with Session(ctx.engine) as s:
-        member = member_by_handle(s, m.sender_handle)
+        member = member_by_handle(s, handle) or (member_by_handle(s, m.sender_handle)
+                                                 if handle != m.sender_handle else None)
 
     if member is None:
         if intent.name == "stop":
             return
-        hh = await household_for_new_member(ctx, m.sender_handle)
+        hh = await household_for_new_member(ctx, handle)
         with Session(ctx.engine) as s:
-            member = Member(household_id=hh.id, photon_handle=m.sender_handle, photon_space_id=m.space_id,
+            member = Member(household_id=hh.id, photon_handle=handle, photon_space_id=m.space_id,
                             agent_user_id=m.agent_id, welcomed=True, created_at=ctx.clock.now())
             s.add(member)
             s.commit()
@@ -87,8 +91,8 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
     with Session(ctx.engine) as s:
         member = s.get(Member, member.id)
         if member.status == "stopped":
-            if intent.name != "start":
-                return  # STOP means silence until they opt back in
+            if _norm(m.text or "") not in ("start", "unstop"):
+                return  # STOP means silence until they text START (a "hi" doesn't opt them back in)
             member.status = "active"
         member.photon_space_id = m.space_id
         member.agent_user_id = m.agent_id
@@ -110,6 +114,11 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
             row.status = "stopped"
             row.photon_space_id = None  # delete the conversation link
             s.add(row)
+            others = s.exec(select(Member).where(Member.household_id == row.household_id, Member.id != row.id,
+                                                 Member.status == "active")).first()
+            # Nothing they were asked can be confirmed later: their questions (all of them when no
+            # one else in the household is listening) are closed.
+            pending.cancel_open(s, row.household_id, member.id if others else None)
             s.commit()
         return
 
@@ -118,14 +127,18 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
     if reply:
         await send_reply(ctx, member, m.id, reply, action_id=_asked(ctx, hh.id, before))
 
+
 async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
     """The household group chat. The first member who texts in a new group links it to their household;
     after that, any member's messages there act on that household and replies go to the whole group.
     People I don't know are ignored, and money needs a YES in the account holder's own 1:1 chat."""
     from ..models import HouseholdSpace
     from ..photon.outbound import reply_in
+    from ..signup import normalize_handle
+    handle = normalize_handle(m.sender_handle) or m.sender_handle
     with Session(ctx.engine) as s:
-        member = member_by_handle(s, m.sender_handle)
+        member = member_by_handle(s, handle) or (member_by_handle(s, m.sender_handle)
+                                                 if handle != m.sender_handle else None)
         group = s.get(HouseholdSpace, m.space_id)
         if member is None or member.status == "stopped":
             return
@@ -156,6 +169,7 @@ async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
 
 async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | None = None,
                    in_group: bool = False) -> str:
+    member_id = member.id if member else None
     name = intent.name
     if name == "not_text":
         return copy.NOT_TEXT
@@ -175,7 +189,8 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | Non
     if name == "choice":
         return answer_choice(ctx, hh.id, intent.choice or 0)
     if name in ("yes", "no"):
-        return await answer_yes_no(ctx, hh, name == "yes", allow_money=not in_group)
+        return await answer_yes_no(ctx, hh, name == "yes", member_id=member_id, exact=intent.exact,
+                                   allow_money=not in_group)
     if name in ("claim", "claim_last", "ask_claim"):
         from . import claims
         if name == "ask_claim":
@@ -197,7 +212,7 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | Non
         return money_text(ctx, hh.id)
     if name == "settle":
         from .. import money
-        return await money.offer(ctx, hh)
+        return await money.offer(ctx, hh, member_id=member_id)
     if name == "trips":
         return trips_text(ctx, hh.id)
     if name == "budget":
@@ -344,10 +359,12 @@ def answer_choice(ctx: Ctx, household_id: int, n: int) -> str:
         return _apply(ctx, s, household_id, [item], p["status"])
 
 
-async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, action_id: int | None = None,
-                        allow_money: bool = True) -> str:
-    """Answers the latest open question (or `action_id`). `allow_money=False` (group chats) refuses
-    YES/NO on transfers: those need the account holder in their own chat or the app."""
+async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, member_id: int | None = None,
+                        exact: bool = True, action_id: int | None = None, allow_money: bool = True) -> str:
+    """Answers the latest open question (or `action_id`). `exact`: the reply was the full word YES.
+    Money moves only on that, and only for the member an offer was addressed to (when it was addressed
+    to one). `allow_money=False` (group chats) refuses YES/NO on transfers: those need the account
+    holder in their own chat or the app."""
     from ..nessie.banking import execute_transfer
 
     now = ctx.clock.now()
@@ -357,10 +374,17 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, action_id: int | Non
             if a is None or a.household_id != hh.id or a.status != "open":
                 return "That question was already answered."
         else:
-            a = pending.latest(s, hh.id, pending.YES_NO_KINDS)
+            money_q = pending.latest(s, hh.id, pending.MONEY_KINDS)
+            other_q = pending.latest(s, hh.id, pending.OTHER_YES_NO_KINDS)
+            if money_q and other_q:
+                # Both open: YES answers the newer one; any other reply answers the fridge question.
+                newest = max((money_q, other_q), key=lambda q: (q.created_at, q.id))
+                a = newest if (yes and exact) else other_q
+            else:
+                a = money_q or other_q
         if not a:
             return copy.nothing_pending()
-        if a.kind in ("transfer", "settle") and not allow_money:
+        if a.kind in pending.MONEY_KINDS and not allow_money:
             return "💳 Money only moves with a YES from the account holder, in their own chat with me or in the app."
         if pending.is_expired(a, now):
             pending.set_status(s, a, "expired")
@@ -368,6 +392,18 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, action_id: int | Non
             return copy.offer_expired() if a.kind == "transfer" else "⌛ That question expired. Reply HELP for options."
         p = pending.payload(a)
         kind, action_id = a.kind, a.id
+        owner = p.get("member_id")
+        if kind in pending.MONEY_KINDS + ("claim",) and owner is not None and member_id is not None \
+                and owner != member_id:
+            return "That question was for someone else in your household, so I left it for them."
+        if kind in pending.MONEY_KINDS and yes and not exact:
+            return "To move money, reply with the full word YES (or NO to skip)."
+
+        if kind == "claim":
+            pending.set_status(s, a, "done" if yes else "declined")
+            s.commit()
+            if not yes:
+                return "👍 OK, nothing was connected. If that wasn't you, nobody can see your bank."
 
         if kind == "photo_stock":
             from . import photo
@@ -441,10 +477,15 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, action_id: int | Non
             s.commit()
             return copy.added([r.name for r in rows]) if yes and rows else "👍 OK, not adding it."
 
+    if kind == "claim":
+        from ..signup import confirm_claim
+        return await confirm_claim(ctx, hh.id, p)
+
     # Money moves only here, after an explicit typed YES.
     if kind == "settle":
         from .. import money
-        return (await money.pay(ctx, p["app_household_id"], hh.id, int(p["to"]), action_id))[1]
+        quoted = int(p["amount"]) if p.get("amount") else None
+        return (await money.pay(ctx, p["app_household_id"], hh.id, int(p["to"]), action_id, quoted=quoted))[1]
     return await execute_transfer(ctx, hh, action_id, float(p["amount"]))
 
 

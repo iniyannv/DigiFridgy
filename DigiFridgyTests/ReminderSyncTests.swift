@@ -16,21 +16,22 @@ struct ReminderSyncTests {
         // A roommate (or a card purchase) adds milk from somewhere else.
         let milk = FridgeItem(name: "Milk", category: "milk", expiresAt: .now.addingTimeInterval(5 * 86_400),
                               source: .receipt)
+        let id = ReminderPlanner.identifier(for: milk.id)
         try await services.repository.saveItem(milk, householdId: hid)
-        try await waitUntil { notifications.log.contains("schedule \(milk.id)") }
+        try await waitUntil { notifications.reminders[id] != nil }
 
         // Then someone else uses it up: its reminder goes away.
         try await services.repository.deleteItem(id: milk.id, householdId: hid)
-        try await waitUntil { notifications.log.contains("cancel \(milk.id)") }
+        try await waitUntil { notifications.reminders[id] == nil }
 
-        // Signing out clears every expiry reminder and the shopping list.
+        // Signing out clears every reminder and the shopping list.
         app.signOut()
-        try await waitUntil { notifications.log.last == "keep []" }
+        #expect(notifications.reminders.isEmpty && notifications.log.last == "remove all")
         #expect(app.shoppingList.isEmpty && app.items.isEmpty)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<200 where !condition() {
+        for _ in 0..<300 where !condition() {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(condition())

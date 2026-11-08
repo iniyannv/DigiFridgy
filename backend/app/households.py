@@ -28,17 +28,20 @@ def put_obj(s: Session, key: str, nessie_id: str) -> None:
 async def provision_household(ctx: Ctx, name: str, first: str, last: str, *, is_demo: bool,
                               checking_balance: float = 1850.0, fund_balance: float = 120.0,
                               key: str | None = None, lookup_by_name: bool = True) -> Household:
-    """Idempotent by `key`: reuses the stored Nessie customer/accounts when present,
-    else looks them up by name before creating new ones.
-
-    The household is found through the customer stored under `key`, never by display name:
-    names aren't unique (two people whose numbers end in the same 4 digits, two Alexes)."""
+    """Idempotent by `key`: reuses the household, Nessie customer and accounts stored under it.
+    Only with `lookup_by_name` (the seeded demo household) does a matching name count as the same
+    household: display names like "Household 0123" aren't unique between people."""
     key = key or f"household:{first.lower()}_{last.lower()}"
     with Session(ctx.engine) as s:
-        customer_id = get_obj(s, f"{key}:customer")
-        existing = _by_customer(s, customer_id)
+        existing = _by_key(s, key)
+        if existing is None and lookup_by_name:
+            existing = s.exec(select(Household).where(Household.name == name)).first()
         if existing and existing.checking_account_id and existing.grocery_fund_account_id:
+            put_obj(s, f"{key}:household", str(existing.id))
+            s.commit()
+            s.refresh(existing)
             return existing
+        customer_id = get_obj(s, f"{key}:customer")
 
     nessie = ctx.nessie
     if not customer_id and lookup_by_name:
@@ -60,21 +63,23 @@ async def provision_household(ctx: Ctx, name: str, first: str, last: str, *, is_
         put_obj(s, f"{key}:customer", customer_id)
         put_obj(s, f"{key}:checking", checking)
         put_obj(s, f"{key}:fund", fund)
-        hh = _by_customer(s, customer_id) or Household(name=name, created_at=ctx.clock.now(), is_demo=is_demo)
+        hh = _by_key(s, key) or (s.exec(select(Household).where(Household.name == name)).first()
+                                 if lookup_by_name else None) or Household(
+            name=name, created_at=ctx.clock.now(), is_demo=is_demo)
         hh.nessie_customer_id = customer_id
         hh.checking_account_id = checking
         hh.grocery_fund_account_id = fund
         s.add(hh)
+        s.flush()  # assigns hh.id
+        put_obj(s, f"{key}:household", str(hh.id))
         s.commit()
         s.refresh(hh)
         return hh
 
 
-def _by_customer(s: Session, customer_id: str | None) -> Household | None:
-    if not customer_id:
-        return None
-    return s.exec(select(Household).where(Household.nessie_customer_id == customer_id)
-                  .order_by(Household.id)).first()
+def _by_key(s: Session, key: str) -> Household | None:
+    hid = get_obj(s, f"{key}:household")
+    return s.get(Household, int(hid)) if hid and hid.isdigit() else None
 
 
 def demo_household(s: Session) -> Household | None:
@@ -97,7 +102,7 @@ async def household_for_new_member(ctx: Ctx, handle: str) -> Household:
         await seed(ctx, with_history=True)
         with Session(ctx.engine) as s:
             return demo_household(s)
+    # Keyed on the whole handle: two people whose numbers end in the same 4 digits get two households.
     digits = "".join(ch for ch in handle if ch.isalnum())[-4:] or "0000"
-    # Keyed by the full handle (like web sign-up), so it's this person's own household.
     return await provision_household(ctx, f"Household {digits}", "Fridge", f"Owner{digits}",
-                                     is_demo=False, key=f"household:{handle}", lookup_by_name=False)
+                                     is_demo=False, key=f"household:handle:{handle.lower()}", lookup_by_name=False)

@@ -29,7 +29,21 @@ log = logging.getLogger("nessie")
 
 
 class NessieError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status  # HTTP status; None for network errors (the request may have landed)
+
+    @property
+    def definitely_rejected(self) -> bool:
+        """A 4xx means Nessie refused the request, so nothing was created."""
+        return self.status is not None and 400 <= self.status < 500
+
+
+class PartialTransfer(NessieError):
+    """The transfer out went through but the matching deposit didn't: money left the payer."""
+    def __init__(self, transfer_id: str, cause: Exception):
+        super().__init__(f"deposit after transfer {transfer_id} failed: {cause}")
+        self.transfer_id = transfer_id
 
 
 def whole_dollars(amount: float) -> int:
@@ -60,22 +74,26 @@ class NessieClient:
     async def _request(self, method: str, path: str, *, json_body: Any = None,
                        params: dict | None = None, empty_404: bool = False) -> Any:
         q = {"key": self.api_key, **(params or {})}
-        last: Exception | None = None
-        for attempt in range(3):
+        # Nessie has no idempotency keys: a POST that timed out may still have been created, so
+        # only reads and deletes are retried. Callers reconcile POSTs (see app.transfers).
+        attempts = 3 if method in ("GET", "DELETE") else 1
+        last: NessieError | None = None
+        for attempt in range(attempts):
             try:
                 r = await self._http.request(method, path, params=q, json=json_body)
             except httpx.TransportError as exc:
-                last = exc
+                last = NessieError(f"{method} {path}: {type(exc).__name__}")
             else:
                 if empty_404 and r.status_code == 404:
                     return []
                 if r.status_code < 500:
                     if r.status_code >= 400:
-                        raise NessieError(f"{method} {path} -> {r.status_code}: {r.text[:300]}")
+                        raise NessieError(f"{method} {path} -> {r.status_code}: {r.text[:300]}", r.status_code)
                     return r.json() if r.content else None
-                last = NessieError(f"{method} {path} -> {r.status_code}: {r.text[:300]}")
-            await asyncio.sleep(0.5 * (attempt + 1))
-        raise NessieError(str(last))
+                last = NessieError(f"{method} {path} -> {r.status_code}: {r.text[:300]}", r.status_code)
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.5 * (attempt + 1))
+        raise last or NessieError(f"{method} {path} failed")
 
     async def _list(self, path: str) -> list[dict]:
         data = await self._request("GET", path, empty_404=True)
@@ -126,10 +144,18 @@ class NessieClient:
         out = {"transaction_date": transaction_date, "status": "completed", "amount": dollars,
                "description": f"{description} (to account {to_account_id})"}
         tid = _created_id(await self._request("POST", f"/accounts/{from_account_id}/transfers", json_body=out))
-        dep = {"medium": "balance", "transaction_date": transaction_date, "status": "completed", "amount": dollars,
-               "description": f"{description} (transfer {tid} from account {from_account_id})"}
-        await self._request("POST", f"/accounts/{to_account_id}/deposits", json_body=dep)
+        try:
+            await self.create_deposit(to_account_id, dollars,
+                                      f"{description} (transfer {tid} from account {from_account_id})",
+                                      transaction_date)
+        except Exception as exc:
+            raise PartialTransfer(tid, exc) from exc
         return tid
+
+    async def create_deposit(self, account_id: str, amount: float, description: str, transaction_date: str) -> str:
+        dep = {"medium": "balance", "transaction_date": transaction_date, "status": "completed",
+               "amount": whole_dollars(amount), "description": description}
+        return _created_id(await self._request("POST", f"/accounts/{account_id}/deposits", json_body=dep))
 
     async def list_transfers(self, account_id: str) -> list[dict]:
         return await self._list(f"/accounts/{account_id}/transfers")
@@ -257,6 +283,12 @@ class MockNessieClient:
                                "description": f"{description} (transfer {tid} from account {from_account_id})"})
         log.info("SIMULATED Nessie transfer $%d %s -> %s", dollars, from_account_id, to_account_id)
         return tid
+
+    async def create_deposit(self, account_id: str, amount: float, description: str, transaction_date: str) -> str:
+        self._get("accounts", account_id)
+        return self._add("deposits", {"account_id": account_id, "medium": "balance",
+                                      "transaction_date": transaction_date, "status": "completed",
+                                      "amount": whole_dollars(amount), "description": description})
 
     async def list_transfers(self, account_id: str) -> list[dict]:
         return self._where("transfers", account_id=account_id)

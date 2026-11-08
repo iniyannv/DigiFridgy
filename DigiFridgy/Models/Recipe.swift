@@ -22,6 +22,20 @@ nonisolated struct Recipe: Codable, Identifiable, Hashable, Sendable {
 nonisolated struct RecipeMatch: Hashable, Sendable {
     var itemName: String
     var daysUntilExpiry: Int
+    /// Whether the item's expiry is an estimate (labels then say "Est.").
+    var expiryIsEstimated: Bool = true
+
+    /// "Est. exp. in 2d" / "Exp. today", matching `FridgeItem.expiryLabel`.
+    var expiryLabel: String {
+        let text: String
+        switch daysUntilExpiry {
+        case ..<0: text = "expired"
+        case 0: text = "exp. today"
+        case 1: text = "exp. tomorrow"
+        default: text = "exp. in \(daysUntilExpiry)d"
+        }
+        return expiryIsEstimated ? "Est. " + text : text.prefix(1).uppercased() + text.dropFirst()
+    }
 }
 
 nonisolated struct ScoredRecipe: Identifiable, Hashable, Sendable {

@@ -37,6 +37,11 @@ async def lifespan(app: FastAPI):
              "SIMULATED" if ctx.nessie.is_mock else "live",
              "SIMULATED" if ctx.photon.is_mock else "live",
              _spacetime_label(ctx), st.llm_model if ctx.llm else "off (keywords only)", st.demo_mode)
+    if st.demo_mode and not st.demo_token:
+        log.warning("DEMO_TOKEN is not set: the demo and bank routes only answer requests from this computer. "
+                    "Set DEMO_TOKEN (and DIGIFRIDGEY_TOKEN in the app) to use them over the network.")
+    if not st.admin_token:
+        log.info("ADMIN_TOKEN is not set: demo reset works from this computer only, and wiping Nessie is off.")
     tasks = []
     try:
         from .card import backfill

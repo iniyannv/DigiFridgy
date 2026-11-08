@@ -17,8 +17,9 @@ final class SpacetimeSubscription {
         var sql: String { "SELECT * FROM \(table)" }
     }
 
-    /// Called with a table's full current rows after the initial subscription and after every change to it.
-    var onRows: (_ table: String, _ rows: [SpacetimeClient.Row]) -> Void = { _, _ in }
+    /// Called with a table's full current rows (raw JSON arrays in `columns` order, one string per row) after
+    /// the initial subscription and after every change to it. Decoding is left to the caller, off the main actor.
+    var onRawRows: (_ table: String, _ columns: [String], _ rows: [String]) -> Void = { _, _, _ in }
     /// Called when the connection comes up or drops.
     var onConnectionChange: (_ connected: Bool) -> Void = { _ in }
 
@@ -65,13 +66,6 @@ final class SpacetimeSubscription {
         while !Task.isCancelled {
             do {
                 try await connectAndListen { backoff = .seconds(1) }
-            } catch SubscriptionFailure.unexpectedColumns(let table) {
-                // The module's views changed shape; polling (which reads columns by name) keeps working.
-                Self.log.error("\(table, privacy: .public) rows don't match the expected columns; using polling")
-                socket?.cancel(with: .goingAway, reason: nil)
-                socket = nil
-                setConnected(false)
-                return
             } catch {
                 Self.log.info("subscription dropped: \(error.localizedDescription, privacy: .public)")
                 // Dropped connection, server restart, no network, or a rejected token. The repository
@@ -136,7 +130,7 @@ final class SpacetimeSubscription {
             // Full initial state. Tables with no rows can be left out, so start every query empty.
             tables = queries.keys.reduce(into: [:]) { $0[$1] = [:] }
             apply((applied["update"] as? [String: Any])?["tables"] as? [[String: Any]] ?? [])
-            try queries.keys.sorted().forEach(publish)
+            queries.keys.sorted().forEach(publish)
             setConnected(true)
             return true
         }
@@ -150,7 +144,7 @@ final class SpacetimeSubscription {
         } else {
             return false  // IdentityToken and other messages
         }
-        try Set(apply(changed)).sorted().forEach(publish)
+        Set(apply(changed)).sorted().forEach(publish)
         return false
     }
 
@@ -175,23 +169,15 @@ final class SpacetimeSubscription {
         return touched
     }
 
-    private enum SubscriptionFailure: Error {
-        case unexpectedColumns(String)
-    }
-
-    private func publish(_ table: String) throws {
+    /// Hands the table's rows to the caller as JSON strings. A view that gained columns keeps working
+    /// (extra trailing values are ignored when decoding) instead of switching the live socket off.
+    private func publish(_ table: String) {
         guard let query = queries[table] else { return }
-        var result: [SpacetimeClient.Row] = []
+        var result: [String] = []
         for (json, count) in tables[table] ?? [:] {
-            guard let values = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [Any],
-                  values.count == query.columns.count else { throw SubscriptionFailure.unexpectedColumns(table) }
-            var row: SpacetimeClient.Row = [:]
-            for (name, value) in zip(query.columns, values) {
-                row[name] = SpacetimeClient.unwrapOption(value)
-            }
-            result.append(contentsOf: repeatElement(row, count: count))
+            result.append(contentsOf: repeatElement(json, count: count))
         }
-        onRows(table, result)
+        onRawRows(table, query.columns, result)
     }
 
     /// Rows come as JSON strings of the row's values; keep them as strings so deletes match inserts exactly.

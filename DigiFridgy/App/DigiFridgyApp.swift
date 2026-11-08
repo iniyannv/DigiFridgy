@@ -23,6 +23,7 @@ struct DigiFridgyApp: App {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background { appState.scheduleBackgroundRefresh() }
+            if newPhase == .active { appState.didBecomeActive() }
         }
         // BGAppRefreshTask: recalls + watched prices. Unreliable on demand — Settings has "Run checks now".
         .backgroundTask(.appRefresh(AppState.refreshTaskID)) {

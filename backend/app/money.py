@@ -292,52 +292,79 @@ def offer_text(state: SettleState, debt: Debt) -> str | None:
     return (f"Send {state.name(debt.to_id)} ${dollars} from Everyday Checking{note}? Reply YES or NO.")
 
 
-_settle_lock = asyncio.Lock()
+_settle_lock = asyncio.Lock()  # one settle computation at a time per process; TransferClaim covers the rest
 
 
 async def pay(ctx: Ctx, app_household_id: str, from_id: int, to_id: int,
-              action_id: int | None = None) -> tuple[bool, str]:
-    """Moves what `from_id` owes `to_id` (whole dollars) between their checking accounts. Runs only
-    after a YES (`action_id`, claimed atomically) or a confirmed tap in the app. The balance is
-    recomputed under a lock, so a double tap can't pay twice."""
+              action_id: int | None = None, quoted: int | None = None,
+              claim_key: str | None = None) -> tuple[bool, str]:
+    """Moves `quoted` whole dollars (what the person saw and approved) from `from_id` to `to_id`.
+
+    Runs only after a YES (`action_id`, claimed atomically, `quoted` = the offered amount) or a
+    confirmed tap in the app (`quoted` = the amount on the dialog). If the debt has dropped below
+    what was approved, nothing moves and the person is asked again. A `TransferClaim` keyed on the
+    pair and the settlements so far makes a double tap, a second worker or a retry pay once."""
+    from . import transfers
     from .brain import pending
     from .photon.outbound import notify_household
+
+    def close(status: str) -> None:
+        if action_id is not None:
+            pending.finish(ctx.engine, action_id, status)
+
     async with _settle_lock:
         state = await settle_state(ctx, app_household_id)
         debt = next((d for d in state.debts if d.from_id == from_id and d.to_id == to_id), None)
-        amount = whole_dollars(debt.amount) if debt else 0
+        current = whole_dollars(debt.amount) if debt else 0
         if action_id is not None and not pending.claim_open(ctx.engine, action_id, ctx.clock.now()):
             return False, "⌛ That offer expired, so nothing moved. Reply SETTLE to see where you stand."
-        if amount < 1:
-            if action_id is not None:
-                pending.finish(ctx.engine, action_id, "done")
+        if current < 1:
+            close("done")
             return False, "Nothing to send: you're square (or it's under $1)."
-        payer, payee = state.roommates[from_id], state.roommates[to_id]
-        if not payer.checking_account_id or not payee.checking_account_id:
+        amount = current if quoted is None else int(quoted)
+        if amount > current:
+            close("superseded")
+            return False, (f"The split changed to ${current} since you confirmed, so nothing moved. "
+                           "Check the new amount and confirm again.")
+        payer, payee = state.roommates.get(from_id), state.roommates.get(to_id)
+        if not payer or not payee or not payer.checking_account_id or not payee.checking_account_id:
+            close("failed")
             return False, "One of you has no checking account connected."
-        try:
-            tid = await ctx.nessie.create_transfer(payer.checking_account_id, payee.checking_account_id, amount,
-                                                   f"DigiFridgey grocery split {payer.name} → {payee.name}",
-                                                   ctx.clock.today().isoformat())
-        except Exception:
-            log.exception("settle transfer failed")
-            if action_id is not None:
-                pending.finish(ctx.engine, action_id, "failed")
+        with Session(ctx.engine) as s:
+            n_paid = len(list(s.exec(select(Settlement).where(
+                Settlement.app_household_id == app_household_id, Settlement.from_household_id == from_id,
+                Settlement.to_household_id == to_id))))
+        key = f"settle:{app_household_id}:{from_id}:{to_id}:{n_paid}:{amount}"
+        if claim_key:
+            key += f":{claim_key[:64]}"
+        out = await transfers.move(ctx, key, payer.checking_account_id, payee.checking_account_id, amount,
+                                   f"DigiFridgey grocery split {payer.name} → {payee.name}",
+                                   ctx.clock.today().isoformat())
+        if out.status == "duplicate":
+            close("done")
+            return False, "That payment is already on its way, so nothing extra moved."
+        if out.status == "unknown":
+            close("failed")
+            return False, ("⚠️ The bank didn't confirm that transfer. Check your balance before trying again; "
+                           "it won't be sent twice.")
+        if not out.money_left:
+            close("failed")
             return False, "⚠️ The bank didn't accept that transfer, so nothing moved. Try again later."
         with Session(ctx.engine) as s:
             s.add(Settlement(app_household_id=app_household_id, from_household_id=from_id, to_household_id=to_id,
-                             amount=float(amount), nessie_transfer_id=tid, settled_at=ctx.clock.now()))
+                             amount=float(amount), nessie_transfer_id=out.transfer_id, settled_at=ctx.clock.now()))
             s.commit()
-        if action_id is not None:
-            pending.finish(ctx.engine, action_id, "done")
+        close("done")
     items = f" for {', '.join(debt.items[:3])}" if debt.items else ""
     await notify_household(ctx, to_id, f"💸 {payer.name} sent you ${amount} for groceries{items}.",
-                           f"settle:{tid}")
-    return True, f"✅ Sent {payee.name} ${amount} from Everyday Checking. You're square for now."
+                           f"settle:{out.transfer_id}")
+    note = "" if out.status == "done" else " (the deposit on their side is still going through)"
+    return True, f"✅ Sent {payee.name} ${amount} from Everyday Checking{note}. You're square for now."
 
 
-async def offer(ctx: Ctx, hh: Household) -> str:
-    """The SETTLE reply, plus a YES offer when this household owes someone."""
+async def offer(ctx: Ctx, hh: Household, member_id: int | None = None) -> str:
+    """The SETTLE reply, plus a YES offer when this household owes someone. With `member_id` (they
+    texted SETTLE), only that person's YES can confirm it."""
     from .brain import pending
     with Session(ctx.engine) as s:
         app_hh = app_household_of(s, hh.id)
@@ -352,7 +379,8 @@ async def offer(ctx: Ctx, hh: Household) -> str:
         if ask:
             with Session(ctx.engine) as s:
                 pending.create(s, hh.id, "settle", {"app_household_id": app_hh, "to": owe[0].to_id,
-                                                    "amount": whole_dollars(owe[0].amount)}, ctx.clock.now())
+                                                    "amount": whole_dollars(owe[0].amount),
+                                                    "member_id": member_id}, ctx.clock.now())
                 s.commit()
             text += "\n" + ask
     return text

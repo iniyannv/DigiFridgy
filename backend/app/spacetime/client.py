@@ -7,13 +7,15 @@ Same API the iOS app uses:
 - `GET /v1/database/:db/subscribe` (WebSocket, subprotocol `v1.json.spacetimedb`): a live subscription
   to the views, so the bridge syncs as soon as someone changes the fridge in the app
 
-Reducer errors (`Err(String)`) come back as HTTP 530 with the message as the body.
+Reducer errors (`Err(String)`) come back as HTTP 530 with the message as the body; a reducer the
+published module doesn't have comes back as 404 "no such reducer".
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import random
 import ssl
 import uuid
 from dataclasses import dataclass, field
@@ -27,7 +29,29 @@ log = logging.getLogger("spacetime")
 
 
 class SpacetimeError(Exception):
-    pass
+    """`status` is the HTTP status (parsed from a leading "NNN: " when not given); `body` the server's text."""
+
+    def __init__(self, message: str, status: int | None = None, body: str | None = None):
+        super().__init__(message)
+        if status is None:
+            head = message.split(":", 1)[0].strip()
+            status = int(head) if head.isdigit() else None
+        self.status = status
+        self.body = body if body is not None else message.split(":", 1)[-1].strip()
+
+
+def is_unknown_reducer(e: BaseException) -> bool:
+    """The module has no such reducer (it was published before the reducer existed)."""
+    return isinstance(e, SpacetimeError) and e.status == 404 and "no such reducer" in e.body.lower()
+
+
+def not_applied(e: BaseException) -> bool:
+    """True when a failed call certainly changed nothing: the reducer returned an error (530, rolled
+    back), the request was rejected (4xx), or it never reached the server. A timeout, a dropped
+    connection or another 5xx may have committed, so callers must not assume either way."""
+    if isinstance(e, SpacetimeError):
+        return e.status is not None and (e.status == 530 or 400 <= e.status < 500)
+    return isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout))
 
 
 class SpacetimeClient:
@@ -95,7 +119,7 @@ class SpacetimeClient:
     @staticmethod
     def _check(r: httpx.Response) -> None:
         if r.status_code >= 300:
-            raise SpacetimeError(f"{r.status_code}: {r.text[:200]}")
+            raise SpacetimeError(f"{r.status_code}: {r.text[:200]}", r.status_code, r.text[:200])
 
 
 def _unwrap(v):
@@ -106,6 +130,10 @@ def _unwrap(v):
         if "none" in v:
             return None
     return v
+
+
+MOCK_MAX_COUNT = 999
+_INVITE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 
 @dataclass
@@ -120,16 +148,29 @@ class _MockHousehold:
     approvals: dict[str, dict] = field(default_factory=dict)  # my_approvals rows
 
 
+def _item_name(data: str) -> str:
+    try:
+        name = json.loads(data).get("name")
+    except (TypeError, ValueError, AttributeError):
+        name = None
+    return (name.strip() if isinstance(name, str) else "")[:80] or "item"
+
+
 class MockSpacetimeClient:
-    """In-memory stand-in with the module's reducer semantics (membership checks included)."""
+    """In-memory stand-in with the module's reducer semantics (membership checks, count bounds,
+    compare-and-set, invite-code rotation and empty-household cleanup included)."""
     is_mock = True
 
     def __init__(self):
         self.tokens: dict[str, str] = {}          # token -> identity
         self.household_of: dict[str, str] = {}    # identity -> household id
         self.households: dict[str, _MockHousehold] = {}
+        self.failed_joins: dict[str, int] = {}    # identity -> wrong codes (the module: per hour)
         self.fail_calls = False                   # tests: simulate an outage
         self.fail_reducers = False                # tests: reads work, writes fail
+        self.missing_reducers: set[str] = set()   # tests: a module published before these existed
+        self.timeout_after_commit: set[str] = set()  # tests: the write lands, the response is lost
+        self.calls: list[tuple[str, list]] = []   # tests: every reducer call that ran
 
     async def close(self) -> None:
         pass
@@ -151,48 +192,111 @@ class MockSpacetimeClient:
             raise SpacetimeError("530: Join or create a household first.")
         return hh
 
+    def _new_code(self) -> str:
+        taken = {h.invite_code for h in self.households.values()}
+        while True:
+            code = "".join(random.choice(_INVITE_ALPHABET) for _ in range(8))
+            if code not in taken:
+                return code
+
+    def _left(self, hh: _MockHousehold) -> None:
+        if hh.members:
+            hh.invite_code = self._new_code()
+        else:
+            self.households.pop(hh.id, None)
+
+    def _leave_all(self, me: str, keep: str | None = None) -> None:
+        for hh in list(self.households.values()):
+            if hh.id != keep and me in hh.members:
+                hh.members.discard(me)
+                self._left(hh)
+
+    @staticmethod
+    def _item(hh: _MockHousehold, item_id: str) -> dict:
+        item = hh.items.get(item_id)
+        if item is None:
+            raise SpacetimeError("530: Item not found.")
+        return item
+
     async def call(self, token: str, reducer: str, args: list) -> None:
         if self.fail_calls or self.fail_reducers:
             raise SpacetimeError("503: mock outage")
+        if reducer in self.missing_reducers:
+            raise SpacetimeError("404: no such reducer")
         me = self._me(token)
+        self._apply(me, token, reducer, args)
+        self.calls.append((reducer, list(args)))
+        if reducer in self.timeout_after_commit:
+            raise httpx.ReadTimeout("mock: timed out after the commit")
+
+    def _apply(self, me: str, token: str, reducer: str, args: list) -> None:
         if reducer == "create_household":
             hid, name = args
-            code = uuid.uuid4().hex[:6].upper()
-            self.households[hid] = _MockHousehold(hid, name, code, {me})
+            self.households[hid] = _MockHousehold(hid, name, self._new_code())
+            self._leave_all(me, keep=hid)
+            self.households[hid].members.add(me)
             self.household_of[me] = hid
         elif reducer == "join_household":
+            if self.failed_joins.get(me, 0) >= 10:
+                raise SpacetimeError("530: Too many wrong invite codes. Try again in an hour.")
             code = args[0].strip().upper()
             hh = next((h for h in self.households.values() if h.invite_code == code), None)
             if hh is None:
+                self.failed_joins[me] = self.failed_joins.get(me, 0) + 1
                 raise SpacetimeError("530: No household found with that invite code.")
+            self._leave_all(me, keep=hh.id)
             hh.members.add(me)
             self.household_of[me] = hh.id
         elif reducer == "leave_household":
-            hh = self._hh(token)
-            hh.members.discard(me)
+            self._hh(token)
+            self._leave_all(me)
             self.household_of.pop(me, None)
+        elif reducer == "kick_member":
+            hh = self._hh(token)
+            target = args[0].strip().lower().removeprefix("0x")
+            if target == me:
+                raise SpacetimeError("530: Use leave to leave the household yourself.")
+            if target not in hh.members:
+                raise SpacetimeError("530: Member not found.")
+            hh.members.discard(target)
+            if self.household_of.get(target) == hh.id:
+                self.household_of.pop(target)
+            self._left(hh)
+        elif reducer == "rotate_invite_code":
+            hh = self._hh(token)
+            hh.invite_code = self._new_code()
         elif reducer == "upsert_item":
             item_id, count, data = args
-            self._hh(token).items[item_id] = {"count": max(0, count), "data": data}
+            self._hh(token).items[item_id] = {"count": max(0, min(count, MOCK_MAX_COUNT)), "data": data}
         elif reducer == "increment_count":
             item_id, delta = args
-            item = self._hh(token).items.get(item_id)
-            if item is None:
-                raise SpacetimeError("530: Item not found.")
-            item["count"] = max(0, item["count"] + delta)
+            item = self._item(self._hh(token), item_id)
+            item["count"] = max(0, min(item["count"] + delta, MOCK_MAX_COUNT))
+        elif reducer == "set_count_if":
+            item_id, expected, new = args
+            hh = self._hh(token)
+            item = self._item(hh, item_id)
+            if item["count"] != expected:
+                raise SpacetimeError(f"530: Count changed (now {item['count']}).")
+            new = max(0, min(new, MOCK_MAX_COUNT))
+            if new == 0:
+                hh.items.pop(item_id)
+            else:
+                item["count"] = new
         elif reducer == "delete_item":
             self._hh(token).items.pop(args[0], None)
         elif reducer in ("use_item", "log_use"):
-            item_id, qty, name = args
+            item_id, qty, _name = args            # the module takes the name from the item, not the caller
             hh = self._hh(token)
+            item = self._item(hh, item_id)
+            name = _item_name(item["data"])
             if reducer == "use_item":
-                item = hh.items.get(item_id)
-                if item is None:
-                    raise SpacetimeError("530: Item not found.")
                 qty = max(1, min(qty, item["count"] or 1))
                 item["count"] -= qty
                 if item["count"] <= 0:
                     hh.items.pop(item_id)
+            elif not 1 <= qty <= 1000:
+                raise SpacetimeError("530: Invalid quantity.")
             hh.uses.append({"id": len(hh.uses) + 1, "item_id": item_id, "name": name, "qty": qty,
                             "used_by_hex": me, "used_at_ms": 0})
         elif reducer == "post_approval":
@@ -215,11 +319,14 @@ class MockSpacetimeClient:
         elif reducer == "delete_shopping_item":
             self._hh(token).shopping.pop(args[0], None)
         else:
-            raise SpacetimeError(f"mock: unsupported reducer {reducer}")
+            raise SpacetimeError("404: no such reducer")
 
     async def query(self, token: str, sql: str) -> list[dict]:
         if self.fail_calls:
             raise SpacetimeError("503: mock outage")
+        if "my_profile" in sql:
+            me = self._me(token)
+            return [{"identity_hex": me, "household_id": self.household_of.get(me, ""), "data": "{}"}]
         try:
             hh = self._hh(token)
         except SpacetimeError:

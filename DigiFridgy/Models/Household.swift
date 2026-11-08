@@ -56,10 +56,17 @@ nonisolated struct UserProfile: Codable, Hashable, Sendable {
 
 /// `households/{hid}/priceHistory/{upc}`
 nonisolated struct PriceHistory: Codable, Hashable, Sendable {
+    /// Store ids of sample (generated) prices start with this. The database row has no source column, so the
+    /// source travels in the store id; anything else (a Kroger location) is a live price.
+    static let samplePrefix = "sample:"
+
     var upc: String
     var lastPrice: Double
     var lastStoreId: String
     var checkedAt: Date
+
+    /// Only live prices are compared for price-drop alerts. "sim" is the old demo marker.
+    var isLive: Bool { !lastStoreId.hasPrefix(Self.samplePrefix) && lastStoreId != "sim" }
 }
 
 /// `households/{hid}/shopping/{id}`

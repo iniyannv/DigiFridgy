@@ -67,7 +67,8 @@ nonisolated struct RecipeScorer: Sendable {
                 guard usedItemIDs.insert(match.id).inserted else { continue }
                 let days = match.daysUntilExpiry(now: now)
                 score += days <= 3 ? 3 : 1
-                uses.append(RecipeMatch(itemName: keyTerm(for: match), daysUntilExpiry: days))
+                uses.append(RecipeMatch(itemName: keyTerm(for: match), daysUntilExpiry: days,
+                                        expiryIsEstimated: match.expiryIsEstimated))
             } else if !missing.contains(food) {
                 score -= 1
                 missing.append(food)

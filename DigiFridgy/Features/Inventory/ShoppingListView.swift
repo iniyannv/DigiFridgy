@@ -42,10 +42,13 @@ struct ShoppingListView: View {
     @State private var selection: Set<String> = []
     @FocusState private var addFocused: Bool
 
+    /// Price for the whole entry: one unit's estimate times how many are on the list.
     private func estimate(_ entry: ShoppingListItem) -> ShoppingEstimate {
-        ShoppingEstimate.estimate(name: entry.name, items: app.items) { name in
+        var estimate = ShoppingEstimate.estimate(name: entry.name, items: app.items) { name in
             app.services.mockPrices.referencePrice(categoryID: app.services.shelfLife.categoryID(forName: name))
         }
+        estimate.price *= Double(entry.count)
+        return estimate
     }
 
     private var open: [ShoppingListItem] { app.shoppingList.filter { !$0.done } }
@@ -58,7 +61,8 @@ struct ShoppingListView: View {
     private var selectedEntries: [ShoppingListItem] { app.shoppingList.filter { selection.contains($0.id) } }
 
     var body: some View {
-        List(selection: $selection) {
+        // Selection is bound only while selecting, so a normal tap opens the item instead of selecting it.
+        List(selection: isSelecting ? $selection : nil) {
             if search.isEmpty && !isSelecting {
                 Section {
                     HStack(spacing: 12) {
@@ -97,7 +101,7 @@ struct ShoppingListView: View {
                         Text(title)
                     } footer: {
                         if title == "To buy" && !isSelecting {
-                            Text("Shared with everyone in \(app.household?.name ?? "your household"), and with the household's iMessage chat. Swipe right or touch and hold to say you'll get something.")
+                            Text("Shared with everyone in \(app.household?.name ?? "your household"), and with the household's iMessage chat. Swipe right to add one more or say you'll get it; swipe left to remove one. Adding something already on the list adds one more.")
                         }
                     }
                 }
@@ -191,6 +195,16 @@ struct ShoppingListView: View {
         .accessibilityAddTraits(entry.done ? .isSelected : [])
         .contextMenu {
             if !entry.done {
+                Button("Add one", systemImage: "plus.circle") {
+                    toggles += 1
+                    app.adjustShoppingCount(entry, by: 1)
+                }
+                if entry.count > 1 {
+                    Button("Remove one", systemImage: "minus.circle") {
+                        toggles += 1
+                        app.adjustShoppingCount(entry, by: -1)
+                    }
+                }
                 Button(entry.claimedBy == nil ? "I'll get it" : "Let go", systemImage: "hand.raised") {
                     app.toggleClaim(entry)
                 }
@@ -201,16 +215,29 @@ struct ShoppingListView: View {
             }
             Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
         }
+        // Same swipes as a fridge row: add one on the left; delete and remove one on the right.
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
+            if entry.count > 1 && !entry.done {
+                Button("Remove one", systemImage: "minus.circle") {
+                    toggles += 1
+                    app.adjustShoppingCount(entry, by: -1)
+                }
+                .tint(.orange)
+            }
             Button(entry.done ? "To buy" : "Bought", systemImage: entry.done ? "arrow.uturn.backward" : "checkmark.circle") {
                 toggles += 1
                 app.toggleShoppingItem(entry)
             }
-            .tint(.green)
+            .tint(.blue)
         }
         .swipeActions(edge: .leading) {
             if !entry.done {
+                Button("Add one", systemImage: "plus.circle") {
+                    toggles += 1
+                    app.adjustShoppingCount(entry, by: 1)
+                }
+                .tint(.green)
                 Button(entry.claimedBy == nil ? "I'll get it" : "Let go", systemImage: "hand.raised") {
                     app.toggleClaim(entry)
                 }
@@ -314,6 +341,12 @@ struct ShoppingRow: View {
                 detailLine(fridge: fridge)
             }
             Spacer(minLength: 4)
+            if entry.count > 1 {
+                Text("×\(entry.count)")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Quantity \(entry.count)")
+            }
             if !entry.done {
                 Text(estimate.priceText)
                     .font(.subheadline.monospacedDigit())

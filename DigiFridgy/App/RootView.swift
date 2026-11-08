@@ -47,13 +47,14 @@ private struct ExpandsTabBarOnScrollUp: ViewModifier {
         } action: { old, new in
             guard let tabBar else { return }
             let delta = new - old
+            // Animated, so expanding plays the same spring as the system's collapse instead of snapping open.
             if new <= 0 {
                 // At the top the system expands it anyway; hand control back.
-                if tabBar.scrollingUp { tabBar.scrollingUp = false }
+                if tabBar.scrollingUp { withAnimation(.smooth(duration: 0.35)) { tabBar.scrollingUp = false } }
             } else if delta < -4, !tabBar.scrollingUp {
-                tabBar.scrollingUp = true
+                withAnimation(.smooth(duration: 0.35)) { tabBar.scrollingUp = true }
             } else if delta > 4, tabBar.scrollingUp {
-                tabBar.scrollingUp = false
+                withAnimation(.smooth(duration: 0.35)) { tabBar.scrollingUp = false }
             }
         }
     }

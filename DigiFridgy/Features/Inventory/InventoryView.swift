@@ -122,7 +122,8 @@ struct InventoryView: View {
     }
 
     private var list: some View {
-        List(selection: $selection) {
+        // Selection is bound only while selecting, so a normal tap opens the item instead of selecting it.
+        List(selection: isSelecting ? $selection : nil) {
             if search.isEmpty && !isSelecting {
                 Section {
                     FridgeSummaryCard()

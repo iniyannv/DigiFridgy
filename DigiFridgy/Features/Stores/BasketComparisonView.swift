@@ -18,9 +18,18 @@ nonisolated enum SalesTax {
 /// One shopping-list entry's price at one store.
 nonisolated struct BasketLine: Hashable, Sendable {
     var name: String
-    /// Nil when the store doesn't carry it or the lookup failed.
+    /// Price for the whole line (unit price × quantity). Nil when the store doesn't carry it or the lookup failed.
     var price: Double?
     var availability: PriceQuote.Availability
+    var quantity = 1
+
+    /// The same line for `quantity` units.
+    func times(_ quantity: Int) -> BasketLine {
+        var line = self
+        line.quantity = max(quantity, 1)
+        line.price = price.map { ($0 * Double(line.quantity) * 100).rounded() / 100 }
+        return line
+    }
 }
 
 /// The whole shopping list priced at one store, with tax.
@@ -57,7 +66,9 @@ struct BasketPriceFinder {
     /// Live Kroger lookups are one call per item per store, so only the nearest few stores.
     var krogerStoreLimit = 3
 
-    func baskets(for targets: [PriceTarget], near: Coordinate, radiusMiles: Double) async throws -> [StoreBasket] {
+    /// `quantities[i]` is how many of `targets[i]` to buy (1 when missing).
+    func baskets(for targets: [PriceTarget], quantities: [Int] = [], near: Coordinate,
+                 radiusMiles: Double) async throws -> [StoreBasket] {
         let kroger = services.kroger
         let walmart = services.walmart
         let mock = services.mockPrices
@@ -98,7 +109,8 @@ struct BasketPriceFinder {
         let stores = krogerStores + others
         let baskets = stores.map { store in
             StoreBasket(store: store, lines: targets.indices.map { index in
-                linesByItem[index]?[store.id] ?? BasketLine(name: targets[index].name, price: nil, availability: .failed)
+                let line = linesByItem[index]?[store.id] ?? BasketLine(name: targets[index].name, price: nil, availability: .failed)
+                return line.times(index < quantities.count ? quantities[index] : 1)
             })
         }
         return StoreBasket.ranked(baskets)
@@ -229,7 +241,8 @@ struct BasketComparisonView: View {
                     }
                 }
             } header: {
-                Text("\(entries.count) \(entries.count == 1 ? "item" : "items") · total with tax")
+                let units = entries.map(\.count).reduce(0, +)
+                Text("\(units) \(units == 1 ? "item" : "items") · total with tax")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Totals include \(SalesTax.rateText) \(SalesTax.areaName) sales tax on every item. Texas exempts most unprepared food, so your receipt may come out lower.")
@@ -288,7 +301,7 @@ struct BasketComparisonView: View {
         let coordinate = await app.currentCoordinate()
         do {
             baskets = try await BasketPriceFinder(services: app.services)
-                .baskets(for: targets, near: coordinate, radiusMiles: radius)
+                .baskets(for: targets, quantities: entries.map(\.count), near: coordinate, radiusMiles: radius)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -360,7 +373,7 @@ private struct BasketBreakdown: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(basket.lines.enumerated()), id: \.offset) { _, line in
                 HStack {
-                    Text(line.name).lineLimit(1)
+                    Text(line.quantity > 1 ? "\(line.quantity) × \(line.name)" : line.name).lineLimit(1)
                     if line.availability == .sample { StatusChip(text: "Sample", tone: .warning) }
                     if line.availability == .online { StatusChip(text: "Walmart.com", tone: .info) }
                     Spacer()

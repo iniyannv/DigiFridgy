@@ -252,7 +252,7 @@ struct RecipesView: View {
                                         message: "Add food to your fridge and we'll suggest recipes that use what's expiring first. You can also search for any recipe above."))
             } else if shown.isEmpty && isLoading {
                 skeleton
-            } else if shown.isEmpty, let errorMessage, scope == .forYou {
+            } else if shown.isEmpty, let errorMessage, scope == .forYou, filters.isEmpty {
                 emptyRow(EmptyStateView(symbol: "wifi.exclamationmark",
                                         title: "Couldn't load recipes",
                                         message: errorMessage,
@@ -410,6 +410,15 @@ struct RecipesView: View {
             errorMessage = nil
         } catch {
             guard generation == loadGeneration, !Task.isCancelled else { return }
+            // A filtered search failed (often Edamam's per-minute limit): filter the unfiltered results on the
+            // phone instead, so the list shows real matches or "no recipes match", not a load error.
+            if !request.filters.isEmpty, let local = await locallyFiltered(request) {
+                guard generation == loadGeneration, !Task.isCancelled else { return }
+                fetched = local
+                fetchedFor = request
+                errorMessage = nil
+                return
+            }
             if fetchedFor == request && !fetched.isEmpty {
                 // A failed refresh of the same results: keep them and say so.
                 app.showError(error)
@@ -420,6 +429,21 @@ struct RecipesView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+extension RecipesView {
+    /// The same search without filters (usually served from the cache), with meat-free diets adapted.
+    /// `shown` then applies the filters on the phone. Nil when that fails too.
+    fileprivate func locallyFiltered(_ request: RecipeSearchRequest) async -> [Recipe]? {
+        var base = request
+        base.filters = RecipeFilters()
+        guard let recipes = try? await app.services.recipes.search(base, userId: app.user?.uid) else { return nil }
+        let diets = request.filters.diets
+        let merged = IngredientSwapper.needsAdapting(diets)
+            ? IngredientSwapper.merge(native: recipes.filter { request.filters.admits($0) }, candidates: recipes, diets: diets)
+            : recipes
+        return RecipeScorer.removingNearDuplicates(merged)
     }
 }
 

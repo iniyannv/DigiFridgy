@@ -646,8 +646,9 @@ final class AppState {
 
     func addToShoppingList(name: String, barcode: String?) {
         guard let hid = householdId else { return }
-        guard !shoppingList.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && !$0.done }) else {
-            showMessage("\(name) is already on the list")
+        // Adding something already on the list buys one more of it, like scanning a second carton into the fridge.
+        if let existing = shoppingList.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && !$0.done }) {
+            adjustShoppingCount(existing, by: 1)
             return
         }
         let entry = ShoppingListItem(name: name, barcode: barcode)
@@ -676,6 +677,23 @@ final class AppState {
                 }
                 showMessage(new.count == 1 ? "Added \(new[0]) to the shopping list"
                                            : "Added \(new.count) items to the shopping list")
+            } catch { showError(error) }
+        }
+    }
+
+    /// Buy one more (or one fewer) of a shopping-list entry. Going below one asks to delete instead.
+    func adjustShoppingCount(_ entry: ShoppingListItem, by delta: Int) {
+        guard let hid = householdId else { return }
+        let current = shoppingList.first { $0.id == entry.id } ?? entry
+        let newCount = current.count + delta
+        guard newCount >= 1 else { deleteShoppingItem(current); return }
+        var updated = current
+        updated.quantity = newCount
+        if let idx = shoppingList.firstIndex(where: { $0.id == entry.id }) { shoppingList[idx] = updated }
+        Task {
+            do {
+                try await services.repository.saveShoppingItem(updated, householdId: hid)
+                if delta > 0 { showMessage("\(updated.name): \(newCount) on the list") }
             } catch { showError(error) }
         }
     }

@@ -42,14 +42,7 @@ struct ShoppingListView: View {
     @State private var selection: Set<String> = []
     @FocusState private var addFocused: Bool
 
-    /// Price for the whole entry: one unit's estimate times how many are on the list.
-    private func estimate(_ entry: ShoppingListItem) -> ShoppingEstimate {
-        var estimate = ShoppingEstimate.estimate(name: entry.name, items: app.items) { name in
-            app.services.mockPrices.referencePrice(categoryID: app.services.shelfLife.categoryID(forName: name))
-        }
-        estimate.price *= Double(entry.count)
-        return estimate
-    }
+    private func estimate(_ entry: ShoppingListItem) -> ShoppingEstimate { app.shoppingEstimate(entry) }
 
     private var open: [ShoppingListItem] { app.shoppingList.filter { !$0.done } }
 
@@ -290,6 +283,17 @@ struct ShoppingListView: View {
         guard !name.isEmpty else { return }
         app.addToShoppingList(name: name, barcode: nil)
         newItem = ""
+    }
+}
+
+extension AppState {
+    /// Price for a whole shopping-list entry: one unit's estimate times how many are on the list.
+    func shoppingEstimate(_ entry: ShoppingListItem) -> ShoppingEstimate {
+        var estimate = ShoppingEstimate.estimate(name: entry.name, items: items) { name in
+            self.services.mockPrices.referencePrice(categoryID: self.services.shelfLife.categoryID(forName: name))
+        }
+        estimate.price *= Double(entry.count)
+        return estimate
     }
 }
 

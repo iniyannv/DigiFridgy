@@ -5,7 +5,6 @@ import asyncio
 
 import json
 import logging
-from pathlib import Path
 
 from sqlmodel import Session, select
 
@@ -20,7 +19,6 @@ from . import copy, pending
 from .router import Intent, _norm, route
 
 log = logging.getLogger("commands")
-RECIPES = json.loads(Path(__file__).with_name("recipes.json").read_text())
 
 
 async def _typing(ctx: Ctx, m: Inbound) -> None:
@@ -73,6 +71,16 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
     if member is None:
         if intent.name == "stop":
             return
+        from . import family
+        with Session(ctx.engine) as s:
+            inv = family.open_invite(s, handle)
+            if inv is not None:  # someone in a household invited this number: they join it
+                member = family.join(ctx, s, inv, handle, m.space_id, m.agent_id)
+                hh = s.get(Household, member.household_id)
+        if member is not None:
+            await send_reply(ctx, member, m.id,
+                             copy.invited_welcome(member.display_name, hh.name, family.inviter_name(ctx, member)))
+            return
         hh = await household_for_new_member(ctx, handle)
         with Session(ctx.engine) as s:
             member = Member(household_id=hh.id, photon_handle=handle, photon_space_id=m.space_id,
@@ -104,7 +112,10 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
         hh = s.get(Household, member.household_id)
 
     if first_text and intent.name != "stop":
-        await send_reply(ctx, member, m.id, copy.welcome(hh.name, new=True))
+        from . import family
+        welcome = (copy.invited_welcome(member.display_name, hh.name, family.inviter_name(ctx, member))
+                   if family.is_guest(ctx, member.id) else copy.welcome(hh.name, new=True))
+        await send_reply(ctx, member, m.id, welcome)
         return
 
     if intent.name == "stop":
@@ -129,20 +140,32 @@ async def handle_message(ctx: Ctx, m: Inbound) -> None:
 
 
 async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
-    """The household group chat. The first member who texts in a new group links it to their household;
-    after that, any member's messages there act on that household and replies go to the whole group.
-    People I don't know are ignored, and money needs a YES in the account holder's own 1:1 chat."""
+    """The household group chat. The first member who texts in a new group links it to their household
+    and I greet everyone in it by name; after that, any member's messages there act on that household and
+    replies go to the whole group. An invited number joins on its first message there. Anyone else gets one
+    short explanation and is then ignored. Money needs a YES in the account holder's own 1:1 chat."""
     from ..models import HouseholdSpace
-    from ..photon.outbound import reply_in
+    from ..photon.outbound import key_salt, post, reply_in
     from ..signup import normalize_handle
+    from . import family
+    from .router import keyword_intent
     handle = normalize_handle(m.sender_handle) or m.sender_handle
+    joined = linked_now = False
+    stranger_hh: Household | None = None
     with Session(ctx.engine) as s:
         member = member_by_handle(s, handle) or (member_by_handle(s, m.sender_handle)
                                                  if handle != m.sender_handle else None)
         group = s.get(HouseholdSpace, m.space_id)
-        if member is None or member.status == "stopped":
+        if member is not None and member.status == "stopped":
             return
-        if group is None:
+        if member is None:
+            inv = family.open_invite(s, handle)
+            if inv is not None and (group is None or group.household_id == inv.household_id):
+                member = family.join(ctx, s, inv, handle)
+                joined = True
+        if member is None:
+            stranger_hh = s.get(Household, group.household_id) if group else None
+        elif group is None:
             group = HouseholdSpace(space_id=m.space_id, household_id=member.household_id,
                                    agent_user_id=m.agent_id, linked_at=ctx.clock.now())
             s.add(group)
@@ -153,16 +176,31 @@ async def handle_group_message(ctx: Ctx, m: Inbound) -> None:
             if group.household_id != member.household_id:
                 return
             hh = s.get(Household, group.household_id)
-            linked_now = False
+
+    if member is None:
+        said = keyword_intent(m.text or "") if m.content_type == "text" else None
+        # A group nobody in a household has linked could be anyone's: stay quiet there.
+        if stranger_hh is None or m.content_type == "reaction" or (said is not None and said.name == "stop"):
+            return
+        # Once per person per group: the send key doesn't change, so repeats are dropped.
+        await post(ctx, m.space_id, m.agent_id, copy.stranger_in_group(stranger_hh.name),
+                   f"{key_salt(ctx)}:stranger:{m.space_id}:{handle}"[:255], m.id, stranger_hh.id)
+        return
     if linked_now:
-        await reply_in(ctx, m.space_id, m.agent_id, m.id, copy.group_welcome(hh.name), hh.id)
+        await reply_in(ctx, m.space_id, m.agent_id, m.id, await family.group_greeting(ctx, hh, m.space_id, member),
+                       hh.id)
         return
     intent = await route(m.text, ctx.llm) if m.text else Intent(name="not_text")
     before = _last_action_id(ctx, hh.id)
     if intent.name == "stop":
         reply = "To stop my messages, text STOP to me directly. Everyone else in this group keeps getting them."
+    elif joined and intent.name in ("start", "help", "unknown", "not_text") and m.content_type != "attachment":
+        reply = None
     else:
         reply = await _answer_content(ctx, hh, m, intent, member, in_group=True)
+    if joined:
+        hello = copy.invited_welcome(member.display_name, hh.name, family.inviter_name(ctx, member))
+        reply = hello + ("\n\n" + reply if reply else "")
     if reply:
         await reply_in(ctx, m.space_id, m.agent_id, m.id, reply, hh.id, action_id=_asked(ctx, hh.id, before))
 
@@ -210,6 +248,10 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | Non
         return add_all(ctx, hh.id)
     if name == "money":
         return money_text(ctx, hh.id)
+    if name in ("settle", "budget") and member is not None:
+        from .family import is_guest
+        if is_guest(ctx, member.id):
+            return copy.GUEST_MONEY
     if name == "settle":
         from .. import money
         return await money.offer(ctx, hh, member_id=member_id)
@@ -225,7 +267,18 @@ async def dispatch(ctx: Ctx, hh: Household, intent: Intent, member: Member | Non
             s.commit()
         return copy.budget_set(intent.amount)
     if name == "dinner":
-        return copy.dinner(await dinner_ideas(ctx, hh.id))
+        from . import recipes
+        return await recipes.suggest(ctx, hh.id, intent.item)
+    if name == "ingredients":
+        from . import recipes
+        return recipes.ingredients_text(ctx, hh.id)
+    if name in ("group", "invite", "name"):
+        from . import family
+        if name == "group":
+            return await family.group_command(ctx, hh, member, in_group)
+        if name == "invite":
+            return family.invite(ctx, hh, member, intent.item or "", intent.person, in_group)
+        return family.set_name(ctx, member, intent.item or "")
     if name == "check":
         return check_text(ctx, hh.id, intent.item or "")
     if name == "app":
@@ -332,10 +385,13 @@ def update_item(ctx: Ctx, household_id: int, query: str | None, status: str) -> 
 def answer_choice(ctx: Ctx, household_id: int, n: int) -> str:
     now = ctx.clock.now()
     with Session(ctx.engine) as s:
-        a = pending.latest(s, household_id, ("disambiguate", "photo_stock"))
+        a = pending.latest(s, household_id, ("disambiguate", "photo_stock", "recipes"))
         if not a or pending.is_expired(a, now):
             return copy.nothing_pending()
         p = pending.payload(a)
+        if a.kind == "recipes":
+            from . import recipes
+            return recipes.detail(ctx, s, household_id, p, n)
         if a.kind == "photo_stock":
             from . import photo
             new, gone = photo.drop(p, n)
@@ -398,6 +454,20 @@ async def answer_yes_no(ctx: Ctx, hh: Household, yes: bool, member_id: int | Non
             return "That question was for someone else in your household, so I left it for them."
         if kind in pending.MONEY_KINDS and yes and not exact:
             return "To move money, reply with the full word YES (or NO to skip)."
+        if kind in pending.MONEY_KINDS and yes and member_id is not None:
+            from .family import is_guest
+            if is_guest(ctx, member_id):
+                return copy.GUEST_MONEY
+
+        if kind == "recipe_missing":
+            pending.set_status(s, a, "done" if yes else "declined")
+            if not yes:
+                s.commit()
+                return "👍 OK, I left your list as it was."
+            from . import recipes
+            added = recipes.add_missing(ctx, s, hh.id, p)
+            s.commit()
+            return copy.added(added) if added else "🛒 Those are already on your list."
 
         if kind == "claim":
             pending.set_status(s, a, "done" if yes else "declined")
@@ -509,25 +579,33 @@ def list_text(ctx: Ctx, household_id: int) -> str:
                                   money.list_estimate(s, household_id, active), week_left, claims_for(s, active))
 
 
+def add_one(ctx: Ctx, s: Session, household_id: int, raw: str, source: str = "manual",
+            sku: str | None = None) -> tuple[str, bool]:
+    """Puts one thing on the list in this session. Returns (name shown, newly added)."""
+    from ..fridge.shelf_life import is_known, lookup
+    info = lookup(sku) if sku and is_known(sku) else best_catalog_match(raw)
+    name = info.display_name if info else raw
+    for r in _open_rows(s, household_id):
+        if (info and r.sku == info.sku) or r.name.lower() == name.lower():
+            if r.confirmed:
+                return r.name, False
+            r.confirmed = True
+            s.add(r)
+            return r.name, True
+    s.add(ShoppingListItem(household_id=household_id, name=name, sku=info.sku if info else None,
+                           source=source, confirmed=True, added_at=ctx.clock.now()))
+    s.flush()
+    return name, True
+
+
 def add_to_list(ctx: Ctx, household_id: int, raw: str, source: str = "manual") -> str:
     raw = raw.strip()[:60]
     if not raw:
         return "What should I add? For example: ADD coffee"
-    info = best_catalog_match(raw)
-    name = info.display_name if info else raw
     with Session(ctx.engine) as s:
-        for r in _open_rows(s, household_id):
-            if (info and r.sku == info.sku) or r.name.lower() == name.lower():
-                if r.confirmed:
-                    return f"🛒 {r.name} is already on your list."
-                r.confirmed = True
-                s.add(r)
-                s.commit()
-                return copy.added([r.name])
-        s.add(ShoppingListItem(household_id=household_id, name=name, sku=info.sku if info else None,
-                               source=source, confirmed=True, added_at=ctx.clock.now()))
+        name, new = add_one(ctx, s, household_id, raw, source)
         s.commit()
-    return copy.added([name])
+    return copy.added([name]) if new else f"🛒 {name} is already on your list."
 
 
 def remove_from_list(ctx: Ctx, household_id: int, raw: str) -> str:
@@ -559,7 +637,7 @@ def add_all(ctx: Ctx, household_id: int) -> str:
         return copy.added([r.name for r in rows])
 
 
-# ---------- money / dinner / check ----------
+# ---------- money / check ----------
 
 def money_text(ctx: Ctx, household_id: int) -> str:
     from .. import money
@@ -580,32 +658,6 @@ def trips_text(ctx: Ctx, household_id: int) -> str:
     if not trips:
         return "🧾 No grocery card purchases in the last two weeks."
     return "🧾 Where your grocery money went\n" + "\n".join("• " + money.trip_line(t) for t in trips)
-
-
-def template_ideas(use_soon_skus: list[str], fresh_skus: set[str]) -> list[str]:
-    scored = []
-    for r in RECIPES:
-        uses = set(r["uses"])
-        soon_hits = [sku for sku in use_soon_skus if sku in uses]
-        have_hits = uses & fresh_skus
-        score = 10 * len(soon_hits) + len(have_hits)
-        if soon_hits or len(have_hits) >= 2:
-            scored.append((score, r["name"]))
-    scored.sort(key=lambda x: -x[0])
-    return [name for _, name in scored[:2]]
-
-
-async def dinner_ideas(ctx: Ctx, household_id: int) -> list[str]:
-    with Session(ctx.engine) as s:
-        fresh = inventory.fresh_items(s, household_id)
-        soon = inventory.use_soon(s, household_id, ctx.clock.now())
-    soon_skus = list(dict.fromkeys(i.sku for i in soon))
-    if ctx.llm is not None and fresh:
-        ideas = await ctx.llm.dinner_ideas([i.name for i in soon], sorted({i.name for i in fresh}))
-        if ideas:
-            return ideas
-    ideas = template_ideas(soon_skus, {i.sku for i in fresh})
-    return ideas or ["Your fridge is light. Reply LIST to plan a grocery run."]
 
 
 def check_units(ctx: Ctx, household_id: int, query: str) -> tuple[str, list[Item]]:

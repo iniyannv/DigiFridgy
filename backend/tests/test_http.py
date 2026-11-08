@@ -71,7 +71,7 @@ def test_webhook_verifies_and_dedupes(seeded):
 
 def test_demo_page_and_state(seeded):
     c = client(seeded)
-    assert "DigiFridgey" in c.get("/demo").text
+    assert "DigiFridgy" in c.get("/demo").text
     st = c.get("/demo/state").json()
     assert st["mock_nessie"] and st["household"]["name"] == "Rivera Household"
 

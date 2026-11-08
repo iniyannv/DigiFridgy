@@ -8,12 +8,13 @@ from dataclasses import dataclass
 
 INTENTS = ("start", "fridge", "expiring", "used", "tossed", "list", "add", "remove", "add_all", "money",
            "budget", "yes", "no", "choice", "dinner", "help", "stop", "privacy", "check", "app", "link", "settle",
-           "trips", "claim", "claim_last", "ask_claim", "unknown")
+           "trips", "claim", "claim_last", "ask_claim", "ingredients", "group", "invite", "name", "unknown")
 
 # Intents an LLM may return. Confirmations and opt-out are keyword-only.
 # Anything that can lead to money moving (settle offers, the budget that sizes a sweep) is keyword-only too.
+# GROUP and INVITE are keyword-only too: they can text people and change who's in a household.
 LLM_INTENTS = ("fridge", "expiring", "used", "tossed", "list", "add", "remove", "money",
-               "dinner", "help", "privacy", "check", "trips", "claim", "ask_claim", "unknown")
+               "dinner", "ingredients", "help", "privacy", "check", "trips", "claim", "ask_claim", "unknown")
 
 
 @dataclass
@@ -24,6 +25,7 @@ class Intent:
     choice: int | None = None
     source: str = "keyword"
     exact: bool = False  # "yes": the full word YES, which is the only reply that moves money
+    person: str | None = None  # "invite": who they're inviting ("INVITE Mom +1469...")
 
 
 def _norm(text: str) -> str:
@@ -47,6 +49,18 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
     ("yes", r"^(yes|y|yep|yeah|yup|ya|sure|ok|okay|confirm|do it)$"),
     ("no", r"^(no|n|nope|nah|don't|dont|not now)$"),
     ("choice", r"^(?P<choice>[1-9])$"),
+    ("choice", r"^(?:recipe|option|number|no\.?|#) ?#?(?P<choice>[1-9])$"),
+    ("choice", r"^(?:ingredients|ingredient list|show(?: me)?|what'?s in|what do i need for) (?:for |of |in )?"
+               r"(?:recipe |number |option |#)?(?P<choice>[1-9])$"),
+    ("group", r"^((the |a |our |my )?(family |household |house |fridge )?group( chat| text)?"
+              r"|(make|start|create|set ?up|open) (a |the |our |my )?(family |household |house |fridge )?(group|group chat|group text)"
+              r"|family chat|household chat|add (everyone|everybody|the family|my family|my roommates)( to (a|the) group( chat)?)?"
+              r"|how do (i|we) (add|invite|get) (my |our )?(family|roommates?|everyone|everybody|people|kids|partner)"
+              r"( to| in| into) (a |the |one )?(group|group chat|chat))$"),
+    ("invite", r"^(?:please )?(?:invite|add) (?:(?P<person>[a-z][a-z'.-]*(?: [a-z][a-z'.-]*)?) (?:at |on |@ )?)?"
+               r"(?P<item>\+?[\d(][\d\-() .]{5,18}\d)"
+               r"(?: to (?:the |our |my )?(?:group|household|fridge|family|chat|group chat|house))?$"),
+    ("name", r"^(?:my name is|my name's|call me|my name'?s) (?P<item>[a-z][a-z'-]{0,19})$"),
     ("add_all", r"^add (them )?all$"),
     ("fridge", r"^(fridge|inventory|show (me )?(my |the )?fridge|what'?s in (my |the )?fridge|what do i have)$"),
     ("expiring", r"^(expiring|use soon|what'?s expiring( soon)?|what is expiring( soon)?|anything expiring( soon)?"
@@ -66,8 +80,20 @@ RULES: list[tuple[str, re.Pattern]] = [(name, re.compile(p)) for name, p in [
               r"|what happened to (my|the|our) groceries)$"),
     ("money", r"^(money|spend|spending|insights?|budget|waste|wasted|how much (did i|have i) (spend|spent|waste|wasted).*)$"),
     ("budget", r"^(set )?(my )?(weekly )?budget (to )?\$?(?P<amount>\d+(?:\.\d{1,2})?)$"),
-    ("dinner", r"^(dinner|recipes?|ideas|meal ideas|what should i (make|cook|eat)( tonight| for dinner)?"
-               r"|what can i (make|cook)( tonight)?)$"),
+    ("dinner", r"^(dinner|recipes?|ideas|meal ideas|dinner ideas|recipe ideas|cooking ideas|food ideas"
+               r"|what should (i|we) (make|cook|eat)( tonight| for dinner| for lunch)?"
+               r"|what (can|could) (i|we) (make|cook)( tonight| for dinner| for lunch)?|what'?s for dinner"
+               r"|what to (make|cook)|any recipes|got any recipes|give me (a )?recipes?|suggest (a )?recipes?)$"),
+    ("ingredients", r"^((my |our )?ingredients|what ingredients (do|have) (i|we)( got| have)?"
+                    r"|what (ingredients|food) (do|have) (i|we) (have|got)( to cook( with)?)?"
+                    r"|what (do|have) (i|we) (have|got) to cook( with)?|what (can|could) (i|we) cook with"
+                    r"|(show|list) (me )?(my |our |the )?ingredients)$"),
+    ("dinner", rf"^(?:what (?:can|could|should) (?:i|we) (?:make|cook|do)|what to (?:make|cook)|recipes?"
+               rf"|any recipes|recipe ideas|ideas|meal ideas|dinner ideas|something to (?:make|cook)"
+               rf"|how (?:do|can|should) (?:i|we) use(?: up)?|what goes) (?:with|using|for|from|that uses) {_ITEM}"
+               rf"(?: tonight| before it goes bad| before it spoils)?$"),
+    ("dinner", rf"^(?:how (?:do|can|should) (?:i|we) use(?: up)?|use up|help me use(?: up)?|cook with) {_ITEM}$"),
+    ("dinner", rf"^{_ITEM} (?:recipes?|recipe ideas|ideas|dishes|meals)$"),
     ("used", r"^(used|finished|done|ate it|used it)$"),
     ("tossed", r"^(tossed|toss|threw it out|trashed|binned|tossed it)$"),
     ("used", rf"^(?:i |we )?(?:used( up)?|finished( off)?|ate|drank|done with|polished off|we finished|we used|"
@@ -95,7 +121,11 @@ def keyword_intent(text: str) -> Intent | None:
             item = re.sub(r"\b(please|pls|thanks|thank you)\b", "", item).strip(" ,") or None
         amount = float(g["amount"]) if g.get("amount") else None
         choice = int(g["choice"]) if g.get("choice") else None
-        return Intent(name=name, item=item, amount=amount, choice=choice, exact=(name == "yes" and t == "yes"))
+        who = (g.get("person") or "").strip() or None
+        if who:
+            who = re.sub(r"^(my|our|the) ", "", who).strip().title() or None
+        return Intent(name=name, item=item, amount=amount, choice=choice, exact=(name == "yes" and t == "yes"),
+                      person=who)
     return None
 
 

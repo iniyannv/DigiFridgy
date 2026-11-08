@@ -34,7 +34,8 @@ def build_ctx(settings: Settings | None = None) -> Ctx:
     clock = Clock(settings.tz, engine, time_skip=settings.demo_mode)
     nessie = (MockNessieClient(settings.mock_nessie_path) if settings.use_mock_nessie
               else NessieClient(settings.nessie_api_key, settings.nessie_base_url))
-    photon = (MockPhotonClient(settings.photon_agent_handle or "+15550100000") if settings.use_mock_photon
+    photon = (MockPhotonClient(settings.photon_agent_handle or "+15550100000",
+                                dedicated=settings.photon_dedicated_line) if settings.use_mock_photon
               else PhotonClient(settings.photon_api_key, settings.photon_project_id, settings.photon_base_url))
     llm = GeminiLLM(settings.llm_api_key, settings.llm_model) if settings.llm_api_key else None
     from .spacetime.client import MockSpacetimeClient, SpacetimeClient

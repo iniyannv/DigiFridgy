@@ -137,7 +137,7 @@ nonisolated enum HouseholdError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .codeNotFound: "No household found with that invite code."
+        case .codeNotFound: "That code didn't match a household. Check the 6 letters and numbers with whoever shared it."
         case .noHousehold: "Join or create a household first."
         }
     }

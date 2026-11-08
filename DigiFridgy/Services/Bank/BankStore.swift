@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-// Talks to the DigiFridgey backend (backend/ folder). The bank is part of the app's household: signing
+// Talks to the DigiFridgy backend (backend/ folder). The bank is part of the app's household: signing
 // up passes the household's invite code, so card purchases stock this same fridge (through SpacetimeDB)
 // and every member of the household sees the same budget.
 
@@ -249,7 +249,7 @@ final class BankStore {
     private func url(_ path: String, _ query: [(String, String)] = []) throws -> URL {
         let base = Self.normalizedServer(serverURL).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !base.isEmpty, var comps = URLComponents(string: base + path), comps.host != nil else {
-            throw BankError(message: "No DigiFridgey server set. Enter its address in Settings → Bank & iMessage, or set DIGIFRIDGEY_SERVER in Config/Secrets.xcconfig and rebuild.")
+            throw BankError(message: "Card connection isn't set up in this build. (Developer: enter the server in Settings → Developer & demo tools, or set DIGIFRIDGEY_SERVER in Config/Secrets.xcconfig.)")
         }
         if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.0, value: $0.1) } }
         return comps.url!
@@ -275,7 +275,7 @@ final class BankStore {
     private func message(for error: Error) -> String {
         if let bank = error as? BankError { return bank.message }
         if case APIError.badStatus(401, _) = error {
-            return "The server at \(serverURL) didn't accept this app's sign-in. Sign out and back in, or check the server can reach SpacetimeDB."
+            return "Your sign-in wasn't accepted. Sign out and back in, then try again."
         }
         if case APIError.badStatus(_, let body) = error,
            let data = body.data(using: .utf8),
@@ -284,7 +284,7 @@ final class BankStore {
             return detail
         }
         if let code = (error as? URLError)?.code, [.cannotConnectToHost, .timedOut, .cannotFindHost].contains(code) {
-            return "Can't reach the DigiFridgey server at \(serverURL). Is it running?"
+            return "Card connection is unavailable right now. Try again in a minute. (Can't reach \(serverURL).)"
         }
         return error.localizedDescription
     }

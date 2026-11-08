@@ -338,7 +338,7 @@ async def pay(ctx: Ctx, app_household_id: str, from_id: int, to_id: int,
         if claim_key:
             key += f":{claim_key[:64]}"
         out = await transfers.move(ctx, key, payer.checking_account_id, payee.checking_account_id, amount,
-                                   f"DigiFridgey grocery split {payer.name} → {payee.name}",
+                                   f"DigiFridgy grocery split {payer.name} → {payee.name}",
                                    ctx.clock.today().isoformat())
         if out.status == "duplicate":
             close("done")

@@ -35,6 +35,9 @@ class Settings:
     photon_platform: str = "imessage"
     photon_agent_handle: str = ""
     photon_webhook_secret: str = ""
+    # A dedicated (project-owned) iMessage line can start chats, so GROUP creates the household group.
+    # Shared lines can't send the first message: GROUP texts instructions instead.
+    photon_dedicated_line: bool = False
     public_url: str = ""  # e.g. https://abc.trycloudflare.com: registers the Photon webhook at startup
     voice_tool_secret: str = ""
     llm_api_key: str = ""
@@ -91,6 +94,7 @@ class Settings:
             photon_platform=e("PHOTON_PLATFORM", "") or "imessage",
             photon_agent_handle=e("PHOTON_AGENT_HANDLE", ""),
             photon_webhook_secret=e("PHOTON_WEBHOOK_SECRET", ""),
+            photon_dedicated_line=_bool("PHOTON_DEDICATED_LINE", False),
             public_url=e("PUBLIC_URL", "").rstrip("/"),
             voice_tool_secret=e("VOICE_TOOL_SECRET", ""),
             llm_api_key=e("LLM_API_KEY", ""),

@@ -39,6 +39,9 @@ def describe(s: Session, hh: Household, a: PendingAction) -> tuple[str, str, boo
     if a.kind == "add_suggestions":
         rows = [s.get(ShoppingListItem, i) for i in p.get("ids", [])]
         return ("Add to the shopping list?", ", ".join(r.name for r in rows if r), False)
+    if a.kind == "recipe_missing":
+        return (f"Add what {p.get('recipe', 'that recipe')} needs to the list?",
+                ", ".join(i["name"] for i in p.get("items", [])), False)
     if a.kind == "nudge":
         item = s.get(Item, p.get("item_id", 0))
         name = item.name if item else "that item"

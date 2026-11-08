@@ -28,26 +28,26 @@ struct BankBudgetCard: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 if let fund = hh.fund_balance {
-                    Text("Fund \(fund.formatted(.currency(code: "USD")))")
+                    Text("Saved \(fund.usd)")
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(hh.week_spend.formatted(.currency(code: "USD")))
+                Text(hh.week_spend.usd)
                     .font(.title2.bold()).monospacedDigit()
-                    .foregroundStyle(hh.week_spend > hh.budget ? .orange : .primary)
-                Text("of \(hh.budget.formatted(.currency(code: "USD")))")
+                    .foregroundStyle(hh.week_spend > hh.budget ? Tone.warning.color : .primary)
+                Text("of \(hh.budget.usd)")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             BudgetBar(spent: hh.week_spend, budget: hh.budget)
             Text(hh.week_waste > 0
-                 ? "\(hh.week_waste.formatted(.currency(code: "USD"))) of food wasted this week"
+                 ? "\(hh.week_waste.usd) of food wasted this week"
                  : "Nothing wasted this week")
                 .font(.caption)
-                .foregroundStyle(hh.week_waste > 0 ? .orange : .secondary)
+                .foregroundStyle(hh.week_waste > 0 ? Tone.warning.color : .secondary)
             if let streak = hh.streak { StreakLine(streak: streak) }
             if let debt = myDebt {
-                Label("You owe \(debt.to_name) \(debt.amount.formatted(.currency(code: "USD")))",
+                Label("You owe \(debt.to_name) \(debt.amount.usd)",
                       systemImage: "person.2").font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -64,15 +64,15 @@ struct BankBudgetCard: View {
             Image(systemName: "building.columns.fill")
                 .font(.title2).foregroundStyle(.tint)
                 .frame(width: 36)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Connect your bank").font(.subheadline.weight(.semibold))
-                Text("Card purchases stock this fridge and track your grocery budget.")
+                Text("Connect a card").font(.subheadline.weight(.semibold))
+                Text("Groceries you buy land in the fridge with what they cost, and you get a weekly budget.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             Button("Connect") { showConnect = true }
                 .buttonStyle(.glassProminent)
-                .controlSize(.small)
         }
         .padding(.vertical, 4)
     }
@@ -84,7 +84,8 @@ struct BudgetBar: View {
 
     var body: some View {
         ProgressView(value: min(spent, budget), total: max(budget, 1))
-            .tint(spent > budget ? .orange : spent > budget * 0.85 ? .yellow : .green)
+            .tint(spent > budget ? .orange : spent > budget * 0.85 ? .orange.opacity(0.7) : .green)
+            .accessibilityValue(spent > budget ? "Over budget" : "\(Int((spent / max(budget, 1)) * 100)) percent of budget")
     }
 }
 
@@ -94,6 +95,9 @@ struct BankDetailView: View {
     @Environment(BankStore.self) private var bank
     @Environment(AppState.self) private var app
     @Environment(\.openURL) private var openURL
+    @State private var showConnect = false
+    @State private var showAddFromCard = false
+    @State private var confirmSweep = false
 
     private var cardItems: [FridgeItem] { app.sortedItems.filter(\.isCardPurchase) }
 
@@ -107,11 +111,16 @@ struct BankDetailView: View {
                 accountsSection(hh)
                 textSection(hh)
             } else {
-                ContentUnavailableView("Bank not connected", systemImage: "building.columns",
-                                       description: Text("Connect a bank in Settings to see your grocery budget."))
+                EmptyStateView(symbol: "building.columns",
+                               title: "No card connected",
+                               message: "Connect a card and groceries you buy land in the fridge automatically, with what they cost.",
+                               primaryTitle: "Connect a card", primary: { showConnect = true })
             }
         }
         .navigationTitle("Grocery budget")
+        .navigationBarTitleDisplayMode(.large)
+        .sheet(isPresented: $showConnect) { ConnectBankSheet() }
+        .sheet(isPresented: $showAddFromCard) { AddFromCardSheet() }
         .refreshable { await bank.refresh() }
         .task { await bank.refreshSettle() }
     }
@@ -120,46 +129,52 @@ struct BankDetailView: View {
         Section {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(hh.week_spend.formatted(.currency(code: "USD")))
+                    Text(hh.week_spend.usd)
                         .font(.largeTitle.bold()).monospacedDigit()
-                    Text("of \(hh.budget.formatted(.currency(code: "USD")))").foregroundStyle(.secondary)
+                    Text("of \(hh.budget.usd)").foregroundStyle(.secondary)
                     Spacer()
                 }
                 BudgetBar(spent: hh.week_spend, budget: hh.budget)
                 Text(hh.week_spend > hh.budget
-                     ? "\((hh.week_spend - hh.budget).formatted(.currency(code: "USD"))) over budget"
-                     : "\((hh.budget - hh.week_spend).formatted(.currency(code: "USD"))) left this week")
+                     ? "\((hh.week_spend - hh.budget).usd) over budget"
+                     : "\((hh.budget - hh.week_spend).usd) left this week")
                     .font(.subheadline)
-                    .foregroundStyle(hh.week_spend > hh.budget ? .orange : .secondary)
+                    .foregroundStyle(hh.week_spend > hh.budget ? Tone.warning.color : .secondary)
                 if let streak = hh.streak { StreakLine(streak: streak) }
             }
             .padding(.vertical, 4)
             LabeledContent("Wasted this week") {
-                Text(hh.week_waste.formatted(.currency(code: "USD")))
-                    .monospacedDigit().foregroundStyle(hh.week_waste > 0 ? .orange : .secondary)
+                Text(hh.week_waste.usd)
+                    .monospacedDigit().foregroundStyle(hh.week_waste > 0 ? Tone.warning.color : .secondary)
             }
             LabeledContent("Wasted all time") {
-                Text(hh.waste_total.formatted(.currency(code: "USD"))).monospacedDigit()
+                Text(hh.waste_total.usd).monospacedDigit()
             }
         } header: {
             Text("Groceries this week")
         } footer: {
-            Text("Text BUDGET <amount> to change the weekly budget. Money only counts as wasted when food expires or gets tossed.")
+            Text("To change your weekly budget, text your fridge “BUDGET 120”. Food only counts as wasted when it expires or gets tossed.")
         }
     }
 
     private var fridgeSection: some View {
         Section {
             if cardItems.isEmpty {
-                Text("Groceries you buy with your card show up here and in your fridge.")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Nothing from your card yet").font(.subheadline.weight(.semibold))
+                    Text("Groceries you buy with your card appear here and in your fridge.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Add from card", systemImage: "creditcard") { showAddFromCard = true }
+                        .buttonStyle(.bordered)
+                }
+                .padding(.vertical, 4)
             }
             ForEach(cardItems) { item in
                 NavigationLink { ItemDetailView(itemId: item.id) } label: {
                     HStack {
                         InventoryRow(item: item)
                         if let value = item.value {
-                            Text(value.formatted(.currency(code: "USD")))
+                            Text(value.usd)
                                 .font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
                         }
                     }
@@ -170,7 +185,7 @@ struct BankDetailView: View {
         } footer: {
             let total = cardItems.compactMap(\.value).reduce(0, +)
             if total > 0 {
-                Text("\(total.formatted(.currency(code: "USD"))) of groceries to use up.")
+                Text("\(total.usd) of groceries to use up.")
             }
         }
     }
@@ -180,19 +195,28 @@ struct BankDetailView: View {
             LabeledContent("Everyday Checking") { money(hh.checking_balance) }
             LabeledContent("Grocery Fund") { money(hh.fund_balance) }
             Button {
-                Task {
-                    do { app.showMessage(try await bank.sweep()) } catch { app.showError(error) }
-                }
+                confirmSweep = true
             } label: {
-                Label("Move what's left to the Grocery Fund", systemImage: "arrow.right.circle")
+                HStack {
+                    Label("Save what's left this week", systemImage: "arrow.right.circle")
+                    Spacer()
+                    if bank.isBusy { ProgressView() }
+                }
             }
-            .disabled(bank.isBusy)
+            .disabled(bank.isBusy || hh.weekLeft <= 0)
+            .confirmationDialog("Save \(max(hh.weekLeft, 0).usd)?", isPresented: $confirmSweep, titleVisibility: .visible) {
+                Button("Text me to confirm") {
+                    Task {
+                        do { app.showMessage(try await bank.sweep()) } catch { app.showError(error) }
+                    }
+                }
+            } message: {
+                Text("Your fridge texts you first. The money moves to the Grocery Fund only when you reply YES.")
+            }
         } header: {
             Text("Accounts")
         } footer: {
-            Text(bank.state?.mock_nessie == true
-                 ? "SIMULATED bank data. You get a text first; money only moves when you reply YES."
-                 : "Capital One Nessie sandbox (synthetic data, never your real accounts). You get a text first; money only moves when you reply YES.")
+            Text("The Grocery Fund is a savings account for grocery money you didn't spend. This is a demo bank with made-up balances, never your real accounts.")
         }
     }
 
@@ -209,15 +233,17 @@ struct BankDetailView: View {
                     Label("Open Messages", systemImage: "message")
                 }
             } else {
-                Text("Photon couldn't assign an iMessage line. Check the server log, then connect again.")
+                Text("Couldn't set up texting. Try connecting again in a minute.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             ForEach(hh.members, id: \.self) { member in
                 Label(PhoneFormat.pretty(member.components(separatedBy: " →").first), systemImage: "iphone")
             }
             if bank.state?.mock_photon == true {
-                Label("SIMULATED iMessage: no real texts are sent", systemImage: "exclamationmark.bubble")
-                    .font(.caption).foregroundStyle(.orange)
+                HStack {
+                    StatusChip(text: "Demo", tone: .warning)
+                    Text("Texts are simulated; nothing is sent.").font(.caption).foregroundStyle(.secondary)
+                }
             }
         } header: {
             Text("iMessage")
@@ -227,7 +253,7 @@ struct BankDetailView: View {
     }
 
     private func money(_ value: Double?) -> some View {
-        Text(value.map { $0.formatted(.currency(code: "USD")) } ?? "–").monospacedDigit()
+        Text(value.map { $0.usd } ?? "–").monospacedDigit()
     }
 }
 
@@ -254,7 +280,8 @@ struct ConnectBankSheet: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Image(systemName: "building.columns.fill")
-                            .font(.system(size: 36)).foregroundStyle(.tint)
+                            .font(.largeTitle).foregroundStyle(.tint)
+                            .accessibilityHidden(true)
                         Text("Your card stocks \(app.household?.name ?? "your fridge")")
                             .font(.title3.bold())
                         Text("Groceries you buy show up in this fridge for everyone in the household, with what they cost. Your fridge texts you on iMessage before food goes bad and tracks your weekly budget.")
@@ -278,16 +305,16 @@ struct ConnectBankSheet: View {
 
                 if let error {
                     Section {
-                        Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning.color)
                     }
                 }
 
                 Section {
-                    Text("Uses synthetic demo bank data from Capital One's Nessie sandbox, never your real accounts.")
+                    Text("This connects a demo bank with made-up purchases, never your real accounts.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Connect bank")
+            .navigationTitle("Connect a card")
             .navigationBarTitleDisplayMode(.inline)
             .scrollDismissesKeyboard(.immediately)
             .toolbar {
@@ -341,12 +368,34 @@ struct BankSettingsSection: View {
                     LabeledContent("Grocery budget", value: bank.handle.map { PhoneFormat.pretty($0) } ?? "Connected")
                 }
             case .notLinked:
-                Button("Connect bank", systemImage: "building.columns") { showConnect = true }
-            case .offline(let message):
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote).foregroundStyle(.orange)
+                Button("Connect a card", systemImage: "building.columns") { showConnect = true }
+            case .offline:
+                Label("Card connection isn't available right now. Try again later.", systemImage: "wifi.exclamationmark")
+                    .font(.footnote).foregroundStyle(.secondary)
             case .unknown:
                 HStack { Text("Checking…").foregroundStyle(.secondary); Spacer(); ProgressView() }
+            }
+        } header: {
+            Text("Card & iMessage")
+        } footer: {
+            Text(bank.isLinked
+                 ? "Card purchases stock this household's fridge. Anyone who joins with the invite code sees the same budget."
+                 : "Connect a card and your groceries land in the fridge automatically, and your fridge can text you on iMessage.")
+        }
+        .sheet(isPresented: $showConnect) { ConnectBankSheet() }
+    }
+}
+
+/// Where the bank + iMessage backend runs. Developer settings only.
+struct BankServerSection: View {
+    @Environment(BankStore.self) private var bank
+
+    var body: some View {
+        @Bindable var bank = bank
+        Section {
+            if case .offline(let message) = bank.status {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(Tone.warning.color)
             }
             TextField("Server, e.g. http://192.168.1.20:8010", text: $bank.serverURL)
                 .keyboardType(.URL)
@@ -360,13 +409,10 @@ struct BankSettingsSection: View {
                     .font(.callout)
             }
         } header: {
-            Text("Bank & iMessage")
+            Text("Bank server")
         } footer: {
-            Text(bank.isLinked
-                 ? "Card purchases stock this household's fridge. Anyone who joins with the invite code sees the same budget."
-                 : "The DigiFridgey server connects your bank and iMessage. The Simulator can use localhost; on an iPhone use your Mac's Wi-Fi address, e.g. http://192.168.1.20:8010.")
+            Text("The DigiFridgy server connects the bank and iMessage. The Simulator can use localhost; on an iPhone use your Mac's Wi-Fi address, e.g. http://192.168.1.20:8010.")
         }
-        .sheet(isPresented: $showConnect) { ConnectBankSheet() }
     }
 }
 
@@ -408,7 +454,7 @@ struct BankDemoSection: View {
                     Button("+3 days") { confirmAdvance(3) }
                 }
                 .buttonStyle(.bordered)
-                Button("Send budget sweep offer", systemImage: "banknote") { act { try await bank.sweep() } }
+                Button("Offer to save what's left", systemImage: "banknote") { act { try await bank.sweep() } }
                 if others.isEmpty {
                     Button("Add a roommate (Sam, own card)", systemImage: "person.badge.plus") {
                         act { try await bank.addRoommate(name: "Sam") }
@@ -428,7 +474,7 @@ struct BankDemoSection: View {
                 Text("Bank demo")
             } footer: {
                 if let s = bank.state {
-                    Text("Buying creates a Nessie purchase; the items land in the fridge within a few seconds. Server clock: \(s.now_local)\(s.offset_days > 0 ? " (+\(s.offset_days.formatted()) days)" : ""). Run the sweep before skipping past Monday; a new week resets spending.")
+                    Text("Buying creates a demo card purchase; the items land in the fridge within a few seconds. Demo clock: \(s.now_local)\(s.offset_days > 0 ? " (+\(s.offset_days.formatted()) days)" : ""). Offer to save before skipping past Monday; a new week resets spending.")
                 }
             }
             .disabled(bank.isBusy)

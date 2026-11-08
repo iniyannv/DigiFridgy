@@ -94,7 +94,7 @@ async def execute_transfer(ctx: Ctx, hh: Household, action_id: int, amount: floa
     if not pending.claim_open(ctx.engine, action_id, now):
         return copy.offer_expired()
     out = await move(ctx, f"sweep:{action_id}", hh.checking_account_id, hh.grocery_fund_account_id, amount,
-                     "DigiFridgey weekly grocery budget sweep", ctx.clock.today().isoformat())
+                     "DigiFridgy weekly grocery budget sweep", ctx.clock.today().isoformat())
     if not out.money_left:
         log.warning("sweep transfer %s: %s", action_id, out.status)
         pending.finish(ctx.engine, action_id, "failed")

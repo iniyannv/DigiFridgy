@@ -33,7 +33,8 @@ cd backend && .venv/bin/python -m pytest -q
    `.venv/bin/python -m app.demo.seed`.
 3. **Photon**: set `PHOTON_API_KEY`, `PHOTON_PROJECT_ID`, `PHOTON_AGENT_HANDLE`. The key needs
    `project:read`, `project:write`, and **`platforms:read` + `platforms:write`** so sign-up can
-   assign lines.
+   assign lines. If the agent is a dedicated (project-owned) line, set `PHOTON_DEDICATED_LINE=true` so
+   `GROUP` can start the household group chat itself.
 4. Start the server and open **`/signup`**. Each person enters their name and iPhone number.
 
 ### Sign-up (`/signup`)
@@ -129,10 +130,24 @@ Monday starts a new budget week, so "this week" spend resets to $0.
 
 `START` (the only way back after STOP) · `APP` (app invite code) · `LINK <code>` · `FRIDGE` · `EXPIRING` · `USED <item>` / "finished the milk" · `TOSSED <item>` ·
 `LIST` · `ADD <item>` · `REMOVE <item>` · `ADD ALL` · `MONEY` · `BUDGET 90` · `TRIPS` · `SETTLE` · `YES` / `NO` ·
-`1`/`2` (pick between matches, or drop a photo item) · "who's grabbing milk?" · `I WILL` · "I'll get eggs" · `DINNER` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP` (also CANCEL, STOPALL, UNSUBSCRIBE, REVOKE, OPT OUT, "stop texting me")
+`1`/`2` (pick between matches, drop a photo item, or open a recipe) · "who's grabbing milk?" · `I WILL` · "I'll get eggs" ·
+`RECIPES` / `DINNER` / "what can I make?" · `RECIPES WITH <item>` / "what can I cook with the spinach?" · `INGREDIENTS` ·
+`GROUP` · `INVITE <number>` · `CALL ME <name>` · "do I have eggs?" · `HELP` · `PRIVACY` · `STOP` (also CANCEL, STOPALL, UNSUBSCRIBE, REVOKE, OPT OUT, "stop texting me")
 
 With `LLM_API_KEY` set, Gemini classifies messages the keyword rules don't recognize and writes
-dinner ideas. It can never produce YES, NO, STOP or ADD ALL; those must be typed.
+recipes for what's in the fridge. It can never produce YES, NO, STOP, ADD ALL, GROUP or INVITE; those
+must be typed.
+
+**Recipes and ingredients** ([`brain/recipes.py`](app/brain/recipes.py)). `RECIPES` ranks recipes the way
+the app's `RecipeScorer` does: +3 for each ingredient you have that expires within 3 days, +1 for each
+other one you have, −1 for each you'd need to buy (salt, oil and other pantry basics don't count). It
+replies with up to 3 numbered recipes, soonest-expiring food first. `RECIPES WITH chicken` (or "chicken
+recipes", "how do I use up the spinach?") only shows recipes with that ingredient. Reply a number
+(or `RECIPE 2`) to see that recipe's ingredients with what you have, what's missing, and what's already
+on your list; it then asks "Add the missing ones to your shopping list? Reply YES or NO" (a tapback or the
+app's *Waiting on a yes* card answers it too). `INGREDIENTS` lists what you have to cook with, use-first
+items at the top. Recipes come from Gemini when `LLM_API_KEY` is set (its ingredients are still checked
+against the real fridge) and from [`brain/recipes.json`](app/brain/recipes.json) otherwise.
 
 Human-in-the-loop moments: ambiguous item → "Which milk? 1) … 2) …"; a whole category → confirm;
 any transfer → explicit YES (enforced by an atomic claim in `brain/pending.py`); one day before
@@ -167,12 +182,29 @@ published; USED by text counts either way.
 
 ## People in the loop (Photon)
 
-- **Household group chat.** Add the agent's number to an iMessage group with your roommates. The first
-  member who texts there links the group to their household; after that it answers any member, and
-  replies go to the whole group. Numbers it doesn't know are ignored. "who's grabbing milk?" puts milk on
-  the list and asks the group; "I will" (or "I'll get eggs") claims it. Claims show in `LIST` and on the
-  app's Shopping list ("Sam's grabbing it"), and swiping right in the app claims too. Money never moves
-  from a group: a YES there to a transfer or settle-up is refused.
+- **Household group chat.** Text `GROUP` to get everyone in one iMessage group with the agent.
+  Photon can only start a chat from a **dedicated** line (`POST /v1/projects/{id}/spaces` needs a
+  project-owned line as the first participant); shared lines, which sign-up assigns, can't send the
+  first message. So:
+  - **Shared line (default):** `GROUP` texts instructions: "start a new group with Sam (555) 555-0199,
+    Mom (469) 555-0123 and me at (555) 010-0000, then send anything in it."
+  - **Dedicated line** (`PHOTON_DEDICATED_LINE=true`): `GROUP` creates the group with everyone in the
+    household and posts the greeting there. If Photon refuses, it falls back to the instructions.
+
+  The first member who texts in a new group links it to their household, and the agent greets everyone
+  in it by name (it reads the group's participants from Photon) and points out numbers that aren't in the
+  household yet. After that it answers any member, and replies go to the whole group. Someone who isn't
+  a member gets one short explanation ("I only answer people in the household; anyone can text
+  INVITE <your number>"), then silence. A group with no household member in it gets no reply at all.
+- **Invites.** `INVITE Mom (469) 555-0123` (or "add +1469… to the group") adds a number to your household
+  before they've texted. When they text the agent, 1:1 or in the household group, they join and get a
+  welcome that says who added them. `CALL ME Sam` sets the name the group sees. A number that already has
+  its own household can't be pulled into yours. Invited people are guests: they share the fridge, list and
+  group chat, but `SETTLE`, `BUDGET` and a YES to a transfer are refused for them.
+- **Claims.** "who's grabbing milk?" puts milk on the list and asks the group; "I will" (or "I'll get
+  eggs") claims it. Claims show in `LIST` and on the app's Shopping list ("Sam's grabbing it"), and
+  swiping right in the app claims too. Money never moves from a group: a YES there to a transfer or
+  settle-up is refused. It needs the account holder's YES in their own 1:1 chat or the app.
 - **Photos.** Text a photo of a receipt or of your fridge. Gemini (`LLM_API_KEY`) reads it, the items are
   matched to the catalog, and the agent lists them: "Add these 6? Reply YES to add all, or a number to
   drop one." Fridge photos skip what's already tracked. Nothing is added without the YES.
@@ -192,7 +224,8 @@ published; USED by text counts either way.
   Photon webhook destination at startup and keeps the signing secret. While webhooks arrive, polling
   drops to every 15 s as a safety net.
 
-Demo: `POST /demo/mock/text` takes `"group": "flat"` to speak in a simulated group chat. These need the
+Demo: `POST /demo/mock/text` takes `"group": "flat"` to speak in a simulated group chat, and
+`"members": ["+15555550199"]` for the other people in it (so the greeting can name them). These need the
 updated module in `server/` published; without it the app simply shows no approvals.
 
 ## Voice (Photon number → ElevenLabs agent)

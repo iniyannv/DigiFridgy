@@ -36,6 +36,8 @@ struct ShoppingListView: View {
     @Environment(AppState.self) private var app
     @Environment(BankStore.self) private var bank
     @State private var newItem = ""
+    @State private var toggles = 0
+    @FocusState private var addFocused: Bool
 
     private func estimate(_ entry: ShoppingListItem) -> ShoppingEstimate {
         ShoppingEstimate.estimate(name: entry.name, items: app.items) { name in
@@ -50,18 +52,18 @@ struct ShoppingListView: View {
             Section {
                 HStack {
                     TextField("Add an item", text: $newItem)
+                        .focused($addFocused)
+                        .submitLabel(.done)
                         .onSubmit(add)
                     Button("Add", action: add).disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             if !open.isEmpty { budgetSection }
-            if app.shoppingList.isEmpty {
-                ContentUnavailableView("Nothing to buy", systemImage: "checklist",
-                                       description: Text("Items you run out of can be added here."))
-            } else {
+            if !app.shoppingList.isEmpty {
                 Section {
                     ForEach(app.shoppingList) { entry in
                         Button {
+                            toggles += 1
                             app.toggleShoppingItem(entry)
                         } label: {
                             Label {
@@ -71,19 +73,14 @@ struct ShoppingListView: View {
                                             .strikethrough(entry.done)
                                             .foregroundStyle(entry.done ? .secondary : .primary)
                                         if let who = entry.claimedBy, !entry.done {
-                                            Label("\(who)'s grabbing it", systemImage: "hand.raised.fill")
-                                                .font(.caption).foregroundStyle(.orange)
+                                            StatusChip(text: "\(who)'s grabbing it", tone: .info, systemImage: "hand.raised.fill")
                                         }
                                     }
                                     Spacer()
                                     if !entry.done {
                                         let e = estimate(entry)
                                         if let badge = e.badge {
-                                            Text(badge)
-                                                .font(.caption2.weight(.semibold))
-                                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                                .background(.yellow.opacity(0.25), in: .capsule)
-                                                .foregroundStyle(.orange)
+                                            StatusChip(text: badge, tone: .warning)
                                         }
                                         Text(e.priceText)
                                             .font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
@@ -91,8 +88,18 @@ struct ShoppingListView: View {
                                 }
                             } icon: {
                                 Image(systemName: entry.done ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(entry.done ? .green : .secondary)
+                                    .foregroundStyle(entry.done ? Tone.success.color : .secondary)
                             }
+                        }
+                        .accessibilityValue(entry.done ? "Bought" : "Not bought")
+                        .accessibilityAddTraits(entry.done ? .isSelected : [])
+                        .contextMenu {
+                            if !entry.done {
+                                Button(entry.claimedBy == nil ? "I'll get it" : "Let go", systemImage: "hand.raised") {
+                                    app.toggleClaim(entry)
+                                }
+                            }
+                            Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
                         }
                         .swipeActions {
                             Button("Delete", systemImage: "trash", role: .destructive) { app.deleteShoppingItem(entry) }
@@ -107,11 +114,24 @@ struct ShoppingListView: View {
                         }
                     }
                 } footer: {
-                    Text("Shared with everyone in \(app.household?.name ?? "your household"), and with the household's iMessage chat. Swipe right to say you'll get something.")
+                    Text("Shared with everyone in \(app.household?.name ?? "your household"), and with the household's iMessage chat. Swipe right or touch and hold to say you'll get something.")
                 }
             }
         }
+        .overlay {
+            if app.shoppingList.isEmpty {
+                EmptyStateView(
+                    symbol: "checklist",
+                    title: "Your shopping list is empty",
+                    message: "Add things you need. Everyone in \(app.household?.name ?? "your household") sees the list, and anyone can say they'll grab it.",
+                    primaryTitle: "Add an item", primary: { addFocused = true }
+                )
+                .padding(.top, 80)
+            }
+        }
+        .sensoryFeedback(.selection, trigger: toggles)
         .navigationTitle("Shopping list")
+        .navigationBarTitleDisplayMode(.large)
     }
 
     private var budgetSection: some View {
@@ -125,17 +145,17 @@ struct ShoppingListView: View {
                     Spacer()
                     if let hh = bank.household {
                         let left = hh.weekLeft
-                        Text(left >= 0 ? "\(left.formatted(.currency(code: "USD"))) left this week"
-                                       : "\((-left).formatted(.currency(code: "USD"))) over budget")
+                        Text(left >= 0 ? "\(left.usd) left this week"
+                                       : "\((-left).usd) over budget")
                             .font(.subheadline)
-                            .foregroundStyle(left < total ? .orange : .secondary)
+                            .foregroundStyle(left < total ? Tone.warning.color : .secondary)
                     }
                 }
                 if let hh = bank.household {
                     BudgetBar(spent: hh.week_spend + total, budget: hh.budget)
                     if hh.weekLeft >= 0 && hh.weekLeft < total {
-                        Text("This trip would put you \((total - hh.weekLeft).formatted(.currency(code: "USD"))) over this week's budget.")
-                            .font(.caption).foregroundStyle(.orange)
+                        Text("This trip would put you \((total - hh.weekLeft).usd) over this week's budget.")
+                            .font(.caption).foregroundStyle(Tone.warning.color)
                     } else if let streak = hh.streak {
                         StreakLine(streak: streak)
                     }

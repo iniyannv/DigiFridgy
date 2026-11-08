@@ -12,7 +12,7 @@ struct NutritionLabelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Nutrition Facts")
-                .font(.system(size: 30, weight: .black))
+                .font(.title.weight(.black))
                 .tracking(-0.5)
             if let serving = nutrition.servingSize {
                 HStack {
@@ -26,9 +26,9 @@ struct NutritionLabelView: View {
             bar(height: 10)
             Text("Amount per serving").font(.caption.bold())
             HStack(alignment: .firstTextBaseline) {
-                Text("Calories").font(.system(size: 26, weight: .black))
+                Text("Calories").font(.title2.weight(.black))
                 Spacer()
-                Text(nutrition.kcal.map { "\(Int($0.rounded()))" } ?? "—").font(.system(size: 32, weight: .black))
+                Text(nutrition.kcal.map { "\(Int($0.rounded()))" } ?? "—").font(.title.weight(.black))
             }
             bar(height: 5)
             HStack {
@@ -44,7 +44,8 @@ struct NutritionLabelView: View {
             row("Protein", nutrition.protein, unit: "g", dv: nil, bold: true, last: true)
             bar(height: 10)
             Text("* The % Daily Value tells you how much a nutrient in a serving of food contributes to a daily diet. 2,000 calories a day is used for general nutrition advice.")
-                .font(.system(size: 9))
+                .font(.caption2)
+                .padding(.top, 2)
         }
         .padding(8)
         .foregroundStyle(.black)
@@ -84,6 +85,8 @@ struct NutritionLabelView: View {
 /// Nutri-Score A–E strip with the product's grade enlarged.
 struct NutriScoreBadge: View {
     var grade: String?
+    @ScaledMetric(relativeTo: .subheadline) private var cell: CGFloat = 28
+
     /// The grade is the food type's typical one, not this product's.
     var isEstimated = false
 
@@ -116,8 +119,9 @@ struct NutriScoreBadge: View {
                     let isSelected = letter == selected
                     Text(letter)
                         .font(isSelected ? .title2.weight(.black) : .subheadline.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(width: isSelected ? 40 : 28, height: isSelected ? 44 : 30)
+                        // Light grades (B, C) need dark letters to stay readable.
+                        .foregroundStyle(letter == "B" || letter == "C" ? .black : .white)
+                        .frame(minWidth: isSelected ? cell * 1.4 : cell, minHeight: isSelected ? cell * 1.55 : cell * 1.07)
                         .background(Self.color(for: letter).opacity(selected == nil || isSelected ? 1 : 0.45),
                                     in: .rect(cornerRadius: isSelected ? 10 : 6))
                 }
@@ -152,8 +156,10 @@ struct AllergenChips: View {
                     .font(.subheadline.weight(hit ? .semibold : .regular))
                     .fixedSize()
                         .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(hit ? Color.orange.opacity(0.2) : Color.secondary.opacity(0.12), in: .capsule)
-                        .foregroundStyle(hit ? .orange : .primary)
+                        .background(hit ? Tone.warning.fill : Tone.neutral.fill, in: .capsule)
+                        .foregroundStyle(hit ? Tone.warning.color : .primary)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(hit ? "\(allergen.displayName), on your allergen list" : allergen.displayName)
                 }
             }
         }

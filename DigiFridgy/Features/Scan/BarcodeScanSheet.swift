@@ -21,6 +21,7 @@ struct BarcodeScanSheet: View {
     @State private var manualCode = ""
     @State private var unknownName = ""
     @State private var scanCount = 0
+    @State private var isSaving = false
 
     private var scannerAvailable: Bool {
         DataScannerViewController.isSupported && DataScannerViewController.isAvailable
@@ -42,9 +43,15 @@ struct BarcodeScanSheet: View {
                 case .confirm:
                     if let draft {
                         ItemConfirmationView(draft: draft,
-                                             usesSavedCorrections: app.hasSavedCorrections(barcode: draft.barcode)) { saved in
+                                             usesSavedCorrections: app.hasSavedCorrections(barcode: draft.barcode),
+                                             isSaving: isSaving) { saved in
+                            guard !isSaving else { return }
+                            isSaving = true
                             Task {
-                                if await app.saveScanned(saved, original: lookedUp) {
+                                let ok = await app.saveScanned(saved, original: lookedUp)
+                                isSaving = false
+                                if ok {
+                                    scanCount += 1
                                     app.showMessage("Added \(saved.name)")
                                     dismiss()
                                 }
@@ -83,7 +90,7 @@ struct BarcodeScanSheet: View {
             } else {
                 Form {
                     Section {
-                        Label("Camera scanning isn't available here (simulator or unsupported device). Type a barcode instead.",
+                        Label("The camera can't scan barcodes on this device. Type the number under the barcode instead.",
                               systemImage: "camera.badge.ellipsis")
                             .font(.subheadline)
                     }
@@ -116,8 +123,7 @@ struct BarcodeScanSheet: View {
             TextField("Or type a barcode", text: $manualCode)
                 .keyboardType(.numberPad)
                 .font(.body.monospaced())
-                .padding(10)
-                .background(.fill.tertiary, in: .rect(cornerRadius: 10))
+                .filledField()
             Button("Go") { handle(manualCode) }
                 .buttonStyle(.glassProminent)
                 .disabled(manualCode.filter(\.isNumber).count < 8)

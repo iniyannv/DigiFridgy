@@ -69,7 +69,7 @@ def test_first_text_after_signup_gets_welcome_and_links_space(ctx):
     run(sign_up(ctx, "Maya", None, "4695550123"))
     raw = ctx.photon.inject("+14695550123", "fridge", created_at=BASE)
     assert run(handle_raw(ctx, raw)) is True
-    assert ctx.photon.outbox[-1]["text"].startswith("👋 Hi! I'm DigiFridgey")
+    assert ctx.photon.outbox[-1]["text"].startswith("👋 Hi! I'm DigiFridgy")
     assert "Maya's Household (0123)" in ctx.photon.outbox[-1]["text"]
     with Session(ctx.engine) as s:
         m = s.exec(select(Member)).one()

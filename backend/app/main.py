@@ -33,7 +33,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     ctx = app.state.ctx
     st = ctx.settings
-    log.info("DigiFridgey starting | Nessie: %s | Photon: %s | App sync (SpacetimeDB): %s | LLM: %s | DEMO_MODE=%s",
+    log.info("DigiFridgy starting | Nessie: %s | Photon: %s | App sync (SpacetimeDB): %s | LLM: %s | DEMO_MODE=%s",
              "SIMULATED" if ctx.nessie.is_mock else "live",
              "SIMULATED" if ctx.photon.is_mock else "live",
              _spacetime_label(ctx), st.llm_model if ctx.llm else "off (keywords only)", st.demo_mode)
@@ -81,7 +81,7 @@ def _spacetime_label(ctx) -> str:
 
 def create_app(ctx=None) -> FastAPI:
     ctx = ctx or build_ctx()
-    app = FastAPI(title="DigiFridgey", lifespan=lifespan)
+    app = FastAPI(title="DigiFridgy", lifespan=lifespan)
     app.state.ctx = ctx
     app.include_router(webhook_router)
     app.include_router(signup_router)

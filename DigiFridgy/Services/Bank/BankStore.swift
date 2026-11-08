@@ -170,6 +170,8 @@ final class BankStore {
 
     private enum Keys {
         static let server = "bank.serverURL"
+        /// The build default in effect when the user saved their own server.
+        static let serverDefault = "bank.serverDefault"
         /// From the old standalone Bank tab, which kept its own household.
         static let legacy = ["bank.householdID", "bank.handle", "bank.line", "bank.householdName"]
     }
@@ -219,8 +221,10 @@ final class BankStore {
         didSet {
             if serverURL == Self.defaultServer {
                 UserDefaults.standard.removeObject(forKey: Keys.server)
+                UserDefaults.standard.removeObject(forKey: Keys.serverDefault)
             } else {
                 UserDefaults.standard.set(serverURL, forKey: Keys.server)
+                UserDefaults.standard.set(Self.defaultServer, forKey: Keys.serverDefault)
             }
         }
     }
@@ -248,6 +252,11 @@ final class BankStore {
 
     init() {
         let d = UserDefaults.standard
+        // A server typed in Settings is dropped once a build ships a different default (e.g. a new tunnel URL).
+        if d.string(forKey: Keys.serverDefault) != Self.defaultServer {
+            d.removeObject(forKey: Keys.server)
+            d.removeObject(forKey: Keys.serverDefault)
+        }
         serverURL = d.string(forKey: Keys.server) ?? Self.defaultServer
         Keys.legacy.forEach(d.removeObject(forKey:))
     }

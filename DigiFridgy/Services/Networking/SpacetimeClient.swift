@@ -122,7 +122,7 @@ final class SpacetimeClient {
     }
 
     /// SATS-JSON encodes Option as {"some": v} / {"none": []}.
-    static func unwrapOption(_ value: Any) -> Any {
+    nonisolated static func unwrapOption(_ value: Any) -> Any {
         if let dict = value as? [String: Any], dict.count == 1 {
             if let some = dict["some"] { return some }
             if dict["none"] != nil { return NSNull() }
@@ -131,7 +131,7 @@ final class SpacetimeClient {
     }
 }
 
-extension SpacetimeClient.Row {
+nonisolated extension SpacetimeClient.Row {
     func string(_ key: String) -> String { (self[key] as? String) ?? "" }
     func int(_ key: String) -> Int { (self[key] as? NSNumber)?.intValue ?? 0 }
     func double(_ key: String) -> Double { (self[key] as? NSNumber)?.doubleValue ?? 0 }
@@ -139,7 +139,16 @@ extension SpacetimeClient.Row {
     func strings(_ key: String) -> [String] { (self[key] as? [String]) ?? [] }
 }
 
+nonisolated struct KeychainError: LocalizedError {
+    var status: OSStatus
+    var errorDescription: String? {
+        let detail = SecCopyErrorMessageString(status, nil) as String? ?? "status \(status)"
+        return "Couldn't save your sign-in to the Keychain (\(detail))."
+    }
+}
+
 /// Tiny generic-password Keychain wrapper (SpacetimeDB identity token).
+/// Items stay on this device (`ThisDeviceOnly`): they aren't in backups or iCloud Keychain.
 nonisolated enum Keychain {
     static func get(_ account: String) -> String? {
         let query: [String: Any] = [
@@ -155,16 +164,17 @@ nonisolated enum Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    static func set(_ value: String, for account: String) {
+    static func set(_ value: String, for account: String) throws {
         delete(account)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "com.iniyann.digifridgy",
             kSecAttrAccount as String: account,
             kSecValueData as String: Data(value.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        SecItemAdd(query as CFDictionary, nil)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
 
     static func delete(_ account: String) {

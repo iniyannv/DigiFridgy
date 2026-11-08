@@ -23,7 +23,10 @@ struct FridgeSummaryCard: View {
 
     var body: some View {
         let items = app.items
-        let expiringThisWeek = items.filter { (0...7).contains($0.daysUntilExpiry()) }.count
+        let expiringItems = items.filter { (0...7).contains($0.daysUntilExpiry()) }
+        let expiringThisWeek = expiringItems.count
+        // Estimated dates are approximate, so the count is too.
+        let expiringValue = expiringItems.contains(where: \.expiryIsEstimated) ? "~\(expiringThisWeek)" : "\(expiringThisWeek)"
         let allergenFlags = items.filter { !$0.allergenHits(for: app.userAllergens).isEmpty }.count
         let totalUnits = items.reduce(0) { $0 + $1.count }
 
@@ -31,7 +34,8 @@ struct FridgeSummaryCard: View {
             HStack(spacing: 0) {
                 stat(value: "\(items.count)", label: "items", detail: "\(totalUnits) units", color: .primary)
                 Divider().frame(height: 36)
-                stat(value: "\(expiringThisWeek)", label: "expire this week", detail: nil, color: expiringThisWeek > 0 ? .orange : .primary)
+                stat(value: expiringValue, label: "expiring this week",
+                     detail: expiringItems.contains(where: \.expiryIsEstimated) ? "incl. estimates" : nil, color: expiringThisWeek > 0 ? .orange : .primary)
                 Divider().frame(height: 36)
                 stat(value: "\(allergenFlags)", label: "allergen flags", detail: nil, color: allergenFlags > 0 ? .red : .primary)
             }

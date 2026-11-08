@@ -32,7 +32,8 @@ final class EdamamRecipeService: RecipeService {
             if let stale = cache.load(key: cacheKey, maxAge: .infinity) { return stale }
             throw lastError
         }
-        cache.save(results, key: cacheKey)
+        // A partial result (some searches failed) isn't cached, or it would hide recipes for six hours.
+        if lastError == nil { cache.save(results, key: cacheKey) }
         return results
     }
 

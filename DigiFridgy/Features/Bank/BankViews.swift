@@ -348,12 +348,17 @@ struct BankSettingsSection: View {
             case .unknown:
                 HStack { Text("Checking…").foregroundStyle(.secondary); Spacer(); ProgressView() }
             }
-            TextField("Server", text: $bank.serverURL)
+            TextField("Server, e.g. http://192.168.1.20:8010", text: $bank.serverURL)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.callout.monospaced())
                 .onSubmit { Task { await bank.refresh() } }
+            if bank.isServerOverridden {
+                Button("Use the build's server\(BankStore.defaultServer.isEmpty ? "" : " (\(BankStore.defaultServer))")",
+                       systemImage: "arrow.uturn.backward") { bank.resetServer() }
+                    .font(.callout)
+            }
         } header: {
             Text("Bank & iMessage")
         } footer: {
@@ -370,6 +375,16 @@ struct BankDemoSection: View {
     @Environment(BankStore.self) private var bank
     @Environment(AppState.self) private var app
     @State private var basket = BankBasket.all[0]
+    /// Buying and skipping days change real (sandbox) bank data, so each asks first.
+    @State private var pending: PendingDemoAction?
+
+    private struct PendingDemoAction: Identifiable {
+        let id = UUID()
+        var title: String
+        var button: String
+        var detail: String
+        var work: () async throws -> String
+    }
 
     var body: some View {
         if bank.isLinked {
@@ -379,11 +394,18 @@ struct BankDemoSection: View {
                         Text("\(b.title) · \(b.store)").tag(b)
                     }
                 }
-                Button("Buy with card", systemImage: "creditcard") { act { try await bank.buy(basket) } }
+                Button("Buy with card", systemImage: "creditcard") {
+                    let chosen = basket
+                    pending = PendingDemoAction(
+                        title: "Buy \(chosen.title.lowercased()) at \(chosen.store)?", button: "Buy with card",
+                        detail: "Creates a card purchase on your connected (sandbox) bank account.") {
+                        try await bank.buy(chosen)
+                    }
+                }
                 HStack {
-                    Button("+1 day") { act { try await bank.advance(days: 1) } }
+                    Button("+1 day") { confirmAdvance(1) }
                     Spacer()
-                    Button("+3 days") { act { try await bank.advance(days: 3) } }
+                    Button("+3 days") { confirmAdvance(3) }
                 }
                 .buttonStyle(.bordered)
                 Button("Send budget sweep offer", systemImage: "banknote") { act { try await bank.sweep() } }
@@ -410,6 +432,20 @@ struct BankDemoSection: View {
                 }
             }
             .disabled(bank.isBusy)
+            .confirmationDialog(pending?.title ?? "", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+                                titleVisibility: .visible, presenting: pending) { action in
+                Button(action.button) { act(action.work) }
+            } message: { action in
+                Text(action.detail)
+            }
+        }
+    }
+
+    private func confirmAdvance(_ days: Int) {
+        pending = PendingDemoAction(
+            title: "Skip ahead \(days) day\(days == 1 ? "" : "s")?", button: "Skip \(days) day\(days == 1 ? "" : "s")",
+            detail: "Moves the server's demo clock forward for everyone: food may expire and texts may be sent. It can't be undone.") {
+            try await bank.advance(days: days)
         }
     }
 

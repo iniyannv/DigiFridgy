@@ -20,6 +20,11 @@ import httpx
 log = logging.getLogger("photon")
 
 
+def _mask(handle: str | None) -> str:
+    from ..signup import mask
+    return mask(handle)
+
+
 def iso(dt: datetime) -> str:
     """Naive-UTC datetime -> RFC 3339 with milliseconds and Z, as the API expects."""
     if dt.tzinfo is not None:
@@ -203,7 +208,7 @@ class MockPhotonClient:
         if handle not in self.assignments:
             self.assignments[handle] = {"assignmentId": _pid("asg"), "handle": handle, "platform": "imessage",
                                         "assignedPhoneNumber": self.agent_handle, "simulated": True}
-            log.info("[SIMULATED Photon] assigned %s to %s", self.agent_handle, handle)
+            log.info("[SIMULATED Photon] assigned %s to %s", self.agent_handle, _mask(handle))
         return self.assignments[handle]
 
     async def get_message(self, message_id: str) -> dict:
@@ -222,7 +227,8 @@ class MockPhotonClient:
                "parentMessageId": parent_message_id, "idempotencyKey": idempotency_key,
                "createdAt": iso(datetime.now(timezone.utc).replace(tzinfo=None))}
         self.outbox.append(rec)
-        log.info("[SIMULATED iMessage -> %s]\n%s", handle, text)
+        log.info("[SIMULATED iMessage -> %s] %d chars", _mask(handle), len(text))
+        log.debug("[SIMULATED iMessage text]\n%s", text)
         return rec
 
     def conversation(self, handle: str) -> list[dict]:

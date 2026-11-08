@@ -42,15 +42,15 @@ struct ItemDetailView: View {
                     Button { showRecall = true } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Recalled — do not eat").bold()
+                                Text(recall.title).bold()
                                 Text(recall.reason).font(.caption).lineLimit(2)
                             }
                         } icon: {
-                            Image(systemName: "exclamationmark.octagon.fill")
+                            Image(systemName: recall.isPossible ? "questionmark.diamond.fill" : "exclamationmark.octagon.fill")
                         }
                         .foregroundStyle(.white)
                     }
-                    .listRowBackground(Color.red)
+                    .listRowBackground(recall.isPossible ? Color.orange : Color.red)
                 }
             }
 
@@ -208,8 +208,15 @@ struct RecallDetailSheet: View {
             List {
                 if let recall = item.recallFlag {
                     Section {
-                        Label("Do not eat this product", systemImage: "exclamationmark.octagon.fill")
-                            .foregroundStyle(.red).bold()
+                        if recall.isPossible {
+                            Label("Possible recall: check the brand", systemImage: "questionmark.diamond.fill")
+                                .foregroundStyle(.orange).bold()
+                            Text("This notice matches the product name only. Compare the brand and codes on your package with the FDA notice.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Label("Do not eat this product", systemImage: "exclamationmark.octagon.fill")
+                                .foregroundStyle(.red).bold()
+                        }
                     }
                     Section("Reason") { Text(recall.reason) }
                     Section("Details") {
@@ -225,6 +232,12 @@ struct RecallDetailSheet: View {
                         }
                     }
                     Section {
+                        Button("Not my product", systemImage: "hand.raised") {
+                            Task {
+                                await app.dismissRecall(item)
+                                dismiss()
+                            }
+                        }
                         Button("Discard item", systemImage: "trash", role: .destructive) {
                             Task {
                                 await app.delete(item)

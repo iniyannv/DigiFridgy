@@ -157,7 +157,9 @@ struct BarcodeScanSheet: View {
         scanCount += 1
         manualCode = ""
 
-        if let existing = app.existingItem(barcode: code) {
+        // Same product with the same fresh estimate and no recall flag: just add one. Otherwise the scan
+        // becomes a new unit with its own expiry estimate (it doesn't inherit an old date or flag).
+        if let existing = app.bumpableItem(barcode: code) {
             Task {
                 await app.adjustCount(existing, by: 1)
                 app.showMessage("Added another \(existing.name) (now \(existing.count + 1))")

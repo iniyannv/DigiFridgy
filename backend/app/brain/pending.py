@@ -14,12 +14,20 @@ from sqlmodel import Session, select
 from ..models import PendingAction
 
 TTL_MINUTES = 30
-YES_NO_KINDS = ("transfer", "bulk_used", "nudge", "add_suggestions", "stock", "settle")
+MONEY_KINDS = ("transfer", "settle")
+OTHER_YES_NO_KINDS = ("bulk_used", "nudge", "add_suggestions", "stock", "claim")
+YES_NO_KINDS = MONEY_KINDS + OTHER_YES_NO_KINDS
 
 
 def create(s: Session, household_id: int, kind: str, payload: dict, now, minutes: int = TTL_MINUTES) -> PendingAction:
-    # A new question replaces any older open question, so YES always answers the latest one.
-    kinds = YES_NO_KINDS if kind in YES_NO_KINDS else (kind,)
+    # A new question replaces older open questions of its own group only: a money offer never
+    # silently replaces a fridge question (or the reverse), so a YES can't land on the wrong one.
+    if kind in MONEY_KINDS:
+        kinds = MONEY_KINDS
+    elif kind in OTHER_YES_NO_KINDS:
+        kinds = OTHER_YES_NO_KINDS
+    else:
+        kinds = (kind,)
     for old in s.exec(select(PendingAction).where(PendingAction.household_id == household_id,
                                                   PendingAction.status == "open",
                                                   PendingAction.kind.in_(kinds))):
@@ -74,7 +82,23 @@ def finish(engine, action_id: int, status: str) -> None:
             s.commit()
 
 
-def expire_stale(s: Session, now) -> None:
+def expire_stale(s: Session, now) -> int:
+    n = 0
     for a in s.exec(select(PendingAction).where(PendingAction.status == "open", PendingAction.expires_at <= now)):
         a.status = "expired"
         s.add(a)
+        n += 1
+    return n
+
+
+def cancel_open(s: Session, household_id: int, member_id: int | None = None) -> int:
+    """STOP: closes this household's open questions (only `member_id`'s when others still listen)."""
+    n = 0
+    for a in s.exec(select(PendingAction).where(PendingAction.household_id == household_id,
+                                                PendingAction.status == "open")):
+        owner = payload(a).get("member_id")
+        if member_id is None or owner in (None, member_id):
+            a.status = "declined"
+            s.add(a)
+            n += 1
+    return n

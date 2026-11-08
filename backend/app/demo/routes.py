@@ -1,8 +1,11 @@
-"""Presenter remote control. Mounted only when DEMO_MODE=true.
-If DEMO_TOKEN is set, requests need header X-Demo-Token (or ?token=)."""
+"""Presenter remote control and the app's bank endpoints. Mounted only when DEMO_MODE=true.
+
+Every route needs the demo token (header X-Demo-Token) when DEMO_TOKEN is set, and only answers
+loopback requests when it isn't (see `app.auth`). Routes that touch one household's money or data
+take that household from the app caller's SpacetimeDB token, never from the query string; the
+operator (loopback, or X-Admin-Token) may still pick any household for the demo page."""
 from __future__ import annotations
 
-import hmac
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -10,6 +13,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from ..auth import AppCaller, app_caller, is_operator, require_demo_token, require_operator
 from ..brain import copy
 from ..db import clear_all
 from ..households import demo_household
@@ -23,16 +27,7 @@ from ..scheduler.jobs import tick_now
 from .seed import DATA, bump_generation, create_basket_purchase, seed
 
 
-def require_token(request: Request) -> None:
-    token = request.app.state.ctx.settings.demo_token
-    if not token:
-        return
-    given = request.headers.get("x-demo-token") or request.query_params.get("token") or ""
-    if not hmac.compare_digest(given, token):
-        raise HTTPException(401, "bad demo token")
-
-
-router = APIRouter(prefix="/demo", dependencies=[Depends(require_token)])
+router = APIRouter(prefix="/demo", dependencies=[Depends(require_demo_token)])
 page_router = APIRouter()
 
 
@@ -57,6 +52,37 @@ async def _demo_hh(ctx, household_id: int | None = None) -> Household:
     return hh or await seed(ctx)
 
 
+async def bank_household(request: Request, household_id: int | None = None) -> Household:
+    """The bank household this request acts on: the app caller's own bank, or (operator only) any."""
+    ctx = _ctx(request)
+    caller = await app_caller(request, required=False)
+    if caller is not None:
+        if caller.bank_household_id is None:
+            raise HTTPException(404, "Connect your bank first.")
+        if household_id and household_id != caller.bank_household_id:
+            raise HTTPException(403, "That's not your bank.")
+        with Session(ctx.engine) as s:
+            hh = s.get(Household, caller.bank_household_id)
+        if hh is None:
+            raise HTTPException(404, "Connect your bank first.")
+        return hh
+    if is_operator(request):
+        return await _demo_hh(ctx, household_id)
+    raise HTTPException(401, "Sign in to the app first (missing app token).")
+
+
+async def app_scope(request: Request, app_household_id: str) -> AppCaller | None:
+    """The verified app caller, who must belong to `app_household_id`; None for the operator."""
+    caller = await app_caller(request, required=False)
+    if caller is not None:
+        if caller.app_household_id != app_household_id:
+            raise HTTPException(403, "You're not in that household.")
+        return caller
+    if is_operator(request):
+        return None
+    raise HTTPException(401, "Sign in to the app first (missing app token).")
+
+
 @page_router.get("/demo", response_class=HTMLResponse)
 async def demo_page() -> str:
     return (Path(__file__).parent / "static" / "demo.html").read_text()
@@ -67,7 +93,7 @@ async def buy(request: Request, basket: str = Query("weekly"), household_id: int
     ctx = _ctx(request)
     if basket not in DATA["baskets"]:
         raise HTTPException(400, f"unknown basket; choose from {sorted(DATA['baskets'])}")
-    hh = await _demo_hh(ctx, household_id)
+    hh = await bank_household(request, household_id)
     pid = await create_basket_purchase(ctx, hh.checking_account_id, basket)
     processed = await sync_now(ctx)  # don't wait for the 5 s loop
     await _sync_app(ctx)
@@ -87,9 +113,13 @@ async def _sync_app(ctx) -> None:
 
 
 @router.post("/advance")
-async def advance(request: Request, days: float = 0, hours: float = 0):
+async def advance(request: Request, days: float = Query(0, ge=0, le=60), hours: float = Query(0, ge=0, le=24 * 60)):
+    """Time only moves forward: a rewind would reopen offers that already expired."""
     ctx = _ctx(request)
-    ctx.clock.advance(days=days, hours=hours)
+    try:
+        ctx.clock.advance(days=days, hours=hours)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(422, str(exc))
     await sync_now(ctx)
     summary = await tick_now(ctx)
     return {"now_local": ctx.clock.local_now().isoformat(timespec="minutes"),
@@ -99,7 +129,7 @@ async def advance(request: Request, days: float = 0, hours: float = 0):
 @router.post("/sweep")
 async def sweep(request: Request, household_id: int | None = None):
     ctx = _ctx(request)
-    hh = await _demo_hh(ctx, household_id)
+    hh = await bank_household(request, household_id)
     text = await offer_sweep(ctx, hh, f"sweep:manual:{ctx.clock.real_now().timestamp():.0f}")
     return {"sent": text}
 
@@ -111,21 +141,24 @@ async def tick(request: Request):
     return await tick_now(ctx)
 
 
-@router.post("/reset")
+@router.post("/reset", dependencies=[Depends(require_operator)])
 async def reset(request: Request, wipe_nessie: bool = False):
     """Fresh local state and a fresh demo customer. wipe_nessie=true also deletes
-    Customers/Accounts/Purchases/Transfers for the whole Nessie key."""
+    Customers/Accounts/Purchases/Transfers for the whole Nessie key, so it needs ADMIN_TOKEN."""
     ctx = _ctx(request)
+    if wipe_nessie:
+        if not ctx.settings.admin_token:
+            raise HTTPException(403, "Wiping Nessie deletes everything for the API key: set ADMIN_TOKEN first.")
+        # Nessie first: if it fails, local state is untouched and the reset can simply be retried.
+        for t in ("Purchases", "Transfers", "Accounts", "Customers"):
+            try:
+                await ctx.nessie.delete_data(t)
+            except Exception as exc:
+                raise HTTPException(502, f"Nessie delete {t} failed, nothing was reset locally: {exc}")
     keep = ("nessie_objects", "processed_messages", "photon_cursor")
     clear_all(ctx.engine, keep=keep)
     ctx.clock.reset()
     reset_salt(ctx)
-    if wipe_nessie:
-        for t in ("Purchases", "Transfers", "Accounts", "Customers"):
-            try:
-                await ctx.nessie.delete_data(t)
-            except Exception as exc:  # report, keep going
-                return {"error": f"Nessie delete {t} failed: {exc}"}
     bump_generation(ctx)  # new synthetic customer, so old purchases don't reappear
     if ctx.photon.is_mock:
         ctx.photon.inbox.clear()
@@ -139,7 +172,7 @@ class MockText(BaseModel):
     text: str
 
 
-@router.post("/mock/text")
+@router.post("/mock/text", dependencies=[Depends(require_operator)])
 async def mock_text(request: Request, body: MockText):
     """SIMULATED inbound iMessage (mock Photon only)."""
     ctx = _ctx(request)
@@ -171,13 +204,22 @@ async def state(request: Request, household_id: int | None = None, handle: str |
     app household's fridge, and none if no one has linked a bank to it yet. With `app_identity`,
     it's that app user's own bank (roommates each connect their own)."""
     ctx = _ctx(request)
+    operator = False
     if app_household_id:
+        caller = await app_scope(request, app_household_id)
+        if caller is not None:
+            app_identity = caller.identity  # never another person's identity from the query
+            handle = None
         linked = bank_for_app_user(ctx, app_household_id, app_identity)
         household_id = linked.id if linked else None
+    else:
+        require_operator(request)  # the demo page: any household, any conversation
+        operator = True
     with Session(ctx.engine) as s:
         hh = (s.get(Household, household_id) if household_id else None) if app_household_id \
             else pick_household(s, household_id)
-        households = [{"id": h.id, "name": h.name} for h in s.exec(select(Household).order_by(Household.id.desc()))]
+        households = ([{"id": h.id, "name": h.name} for h in s.exec(select(Household).order_by(Household.id.desc()))]
+                      if operator else [])
         if hh and not handle:
             first = s.exec(select(Member).where(Member.household_id == hh.id).order_by(Member.id)).first()
             handle = first.photon_handle if first else None
@@ -217,7 +259,7 @@ async def state(request: Request, household_id: int | None = None, handle: str |
                 out["household"]["fund_balance"] = await running_balance(ctx.nessie, hh.grocery_fund_account_id)
             except Exception:
                 pass
-    if ctx.photon.is_mock:
+    if ctx.photon.is_mock and (operator or (hh and member and member.household_id == hh.id)):
         out["conversation"] = ctx.photon.conversation(handle)
     return out
 
@@ -244,10 +286,8 @@ async def purchases(request: Request, household_id: int | None = None):
     """Recent grocery card purchases with their products, and which ones are already in the fridge."""
     from ..card import list_purchases
     ctx = _ctx(request)
+    hh = await bank_household(request, household_id)
     with Session(ctx.engine) as s:
-        hh = s.get(Household, household_id) if household_id else pick_household(s, None)
-        if not hh:
-            raise HTTPException(404, "no such household")
         from ..money import purchase_breakdown
         out = list_purchases(ctx, s, hh.id)
         for p in out:
@@ -261,10 +301,9 @@ async def stock_purchase(request: Request, purchase_id: str, body: StockBody,
     from .. import card
     from ..photon.outbound import notify_household
     ctx = _ctx(request)
+    hh = await bank_household(request, household_id)
     with Session(ctx.engine) as s:
-        hh = s.get(Household, household_id) if household_id else pick_household(s, None)
-        if not hh:
-            raise HTTPException(404, "no such household")
+        hh = s.get(Household, hh.id)
         fresh = card.stock_lines(ctx, s, hh, purchase_id, body.lines)
         s.commit()
         names = sorted({i.name for i in fresh})
@@ -282,10 +321,9 @@ async def stock_purchase(request: Request, purchase_id: str, body: StockBody,
 async def skip_purchase(request: Request, purchase_id: str, household_id: int | None = None):
     from .. import card
     ctx = _ctx(request)
+    hh = await bank_household(request, household_id)
     with Session(ctx.engine) as s:
-        hh = s.get(Household, household_id) if household_id else pick_household(s, None)
-        if not hh:
-            raise HTTPException(404, "no such household")
+        hh = s.get(Household, hh.id)
         n = card.skip_rest(s, hh, purchase_id, ctx.clock.now())
         s.commit()
     return {"skipped": n}
@@ -303,6 +341,9 @@ async def settle(request: Request, app_household_id: str, household_id: int | No
     """Who owes whom among the roommates (bank households) sharing this app household's fridge."""
     from ..money import settle_state
     ctx = _ctx(request)
+    caller = await app_scope(request, app_household_id)
+    if caller is not None:
+        household_id = caller.bank_household_id
     state = await settle_state(ctx, app_household_id)
     return {"me": household_id, "app_uses_available": state.app_uses_available,
             "roommates": [{"id": r.household_id, "name": r.name} for r in state.roommates.values()],
@@ -310,25 +351,46 @@ async def settle(request: Request, app_household_id: str, household_id: int | No
 
 
 @router.post("/settle/pay")
-async def settle_pay(request: Request, app_household_id: str, household_id: int, to: int):
-    """The app user confirmed paying a roommate: a Nessie transfer between their checking accounts."""
+async def settle_pay(request: Request, app_household_id: str, to: int, household_id: int | None = None,
+                     quoted_amount: int | None = Query(None, ge=1)):
+    """The app user confirmed paying a roommate `quoted_amount` (the whole dollars the dialog showed):
+    a Nessie transfer from the caller's own checking account. The payer is always the caller."""
     from ..money import pay
     ctx = _ctx(request)
+    caller = await app_scope(request, app_household_id)
+    if caller is not None:
+        if caller.bank_household_id is None:
+            raise HTTPException(404, "Connect your bank first.")
+        if household_id and household_id != caller.bank_household_id:
+            raise HTTPException(403, "You can only pay from your own bank.")
+        household_id = caller.bank_household_id
+    elif household_id is None:
+        raise HTTPException(400, "household_id is required")
     with Session(ctx.engine) as s:
-        if household_id not in _roommate_ids(s, app_household_id) or to not in _roommate_ids(s, app_household_id):
-            raise HTTPException(404, "not a roommate in this fridge")
-    ok, message = await pay(ctx, app_household_id, household_id, to)
+        ids = _roommate_ids(s, app_household_id)
+    if household_id not in ids or to not in ids:
+        raise HTTPException(404, "not a roommate in this fridge")
+    ok, message = await pay(ctx, app_household_id, household_id, to, quoted=quoted_amount,
+                            claim_key=request.headers.get("idempotency-key"))
     return {"ok": ok, "message": message}
 
 
 @router.post("/settle/ask")
-async def settle_ask(request: Request, app_household_id: str, household_id: int, debtor: int):
-    """Texts a roommate who owes this household their split, with a YES to pay."""
+async def settle_ask(request: Request, app_household_id: str, debtor: int, household_id: int | None = None):
+    """Texts a roommate who owes the caller their split, with a YES to pay."""
     from ..money import request_payment
     ctx = _ctx(request)
+    caller = await app_scope(request, app_household_id)
+    if caller is not None:
+        if caller.bank_household_id is None:
+            raise HTTPException(404, "Connect your bank first.")
+        household_id = caller.bank_household_id
+    elif household_id is None:
+        raise HTTPException(400, "household_id is required")
     with Session(ctx.engine) as s:
-        if debtor not in _roommate_ids(s, app_household_id):
-            raise HTTPException(404, "not a roommate in this fridge")
+        ids = _roommate_ids(s, app_household_id)
+    if debtor not in ids or household_id not in ids:
+        raise HTTPException(404, "not a roommate in this fridge")
     return {"message": await request_payment(ctx, app_household_id, debtor, household_id)}
 
 
@@ -345,6 +407,7 @@ async def add_roommate(request: Request, app_household_id: str, name: str = "Sam
     from ..households import provision_household
     from ..spacetime.bridge import join_app_household
     ctx = _ctx(request)
+    await app_scope(request, app_household_id)
     if basket not in DATA["baskets"]:
         raise HTTPException(400, f"unknown basket; choose from {sorted(DATA['baskets'])}")
     with Session(ctx.engine) as s:
@@ -377,6 +440,14 @@ async def roommate_uses(request: Request, household_id: int, body: UseBody):
     from ..brain.commands import update_item
     from ..spacetime.bridge import request_sync
     ctx = _ctx(request)
+    caller = await app_caller(request, required=False)
+    if caller is not None:
+        with Session(ctx.engine) as s:
+            roommates = _roommate_ids(s, caller.app_household_id) if caller.app_household_id else set()
+        if household_id not in roommates:
+            raise HTTPException(403, "Not a roommate in your fridge.")
+    elif not is_operator(request):
+        raise HTTPException(401, "Sign in to the app first (missing app token).")
     reply = update_item(ctx, household_id, body.item, "used")
     await _sync_app(ctx)
     request_sync(ctx)

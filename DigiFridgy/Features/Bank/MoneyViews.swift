@@ -323,20 +323,48 @@ struct RoommatesSection: View {
                 Text("Paying is a Nessie transfer from your checking to theirs, in whole dollars. Nothing moves until you confirm.")
             }
         }
-        .confirmationDialog(confirming.map { "Send \($0.to_name) \(usd(wholeDollars($0.amount)))?" } ?? "",
+        .confirmationDialog(confirming.map { "Send \($0.to_name) \(usd(Double($0.wholeDollars)))?" } ?? "",
                             isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
                             titleVisibility: .visible, presenting: confirming) { debt in
-            Button("Send \(usd(wholeDollars(debt.amount))) from Everyday Checking") {
+            Button("Send \(usd(Double(debt.wholeDollars))) from Everyday Checking") {
+                let quoted = debt.wholeDollars
                 Task {
-                    do { app.showMessage(try await bank.pay(debt)) } catch { app.showError(error) }
+                    do {
+                        app.showMessage(try await bank.pay(debt, quoted: quoted))
+                    } catch let error as BankError {
+                        app.showError(error)
+                        if let changed = error.changedDebt { reconfirm(changed) }
+                    } catch {
+                        app.showError(error)
+                    }
                 }
             }
         } message: { debt in
             Text("For \(debt.items.prefix(4).joined(separator: ", ")). The bank moves whole dollars; the cents stay on the tab.")
         }
+        // A refresh changed the amount while the dialog was open: show it again with the new amount.
+        .onChange(of: bank.settle?.debts) { _, debts in
+            guard let open = confirming else { return }
+            let fresh = debts?.first { $0.id == open.id }
+            guard fresh?.wholeDollars != open.wholeDollars else { return }
+            confirming = nil
+            if let fresh, fresh.wholeDollars >= 1 {
+                app.showMessage("The split changed to \(usd(Double(fresh.wholeDollars))). Confirm again.")
+                reconfirm(fresh)
+            } else {
+                app.showMessage("You don't owe \(open.to_name) anything now.")
+            }
+        }
     }
 
-    private func wholeDollars(_ value: Double) -> Double { value.rounded(.down) }
+    private func reconfirm(_ debt: SettleDebt) {
+        confirming = nil
+        Task {
+            // Let the old dialog finish dismissing before presenting the new amount.
+            try? await Task.sleep(for: .milliseconds(450))
+            confirming = debt
+        }
+    }
 
     @ViewBuilder
     private func row(_ debt: SettleDebt, me: Int?) -> some View {

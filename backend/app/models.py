@@ -225,3 +225,20 @@ class CardPurchaseLine(SQLModel, table=True):
     total: float
     status: str = "pending"  # pending | stocked | skipped
     status_at: Optional[NaiveDatetime] = None
+
+
+class TransferClaim(SQLModel, table=True):
+    """One money movement, claimed before Nessie is called. The unique key stops a double tap, a
+    second worker or a retry from paying twice; the marker in the Nessie description lets a timed-out
+    call be checked against what Nessie actually stored."""
+    __tablename__ = "transfer_claims"
+    key: str = Field(primary_key=True)
+    status: str = "pending"  # pending | done | deposit_pending | failed
+    from_account: str
+    to_account: str
+    amount: int
+    description: str
+    transaction_date: str
+    nessie_transfer_id: Optional[str] = None
+    created_at: NaiveDatetime
+    updated_at: Optional[NaiveDatetime] = None

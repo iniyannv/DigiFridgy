@@ -57,5 +57,6 @@ async def photon_webhook(request: Request) -> Response:
     if message is not None:
         asyncio.create_task(handle_raw(ctx, message))
     else:
-        log.info("webhook event without a message: %s", str(event)[:200])
+        kind = event.get("type") if isinstance(event, dict) else type(event).__name__
+        log.info("webhook event without a message (type %s)", kind)
     return Response(status_code=204)

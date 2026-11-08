@@ -28,6 +28,14 @@ nonisolated final class APIClient: Sendable {
         self.session = session
     }
 
+    static let maxRateLimitRetries = 2
+
+    /// Seconds from a numeric Retry-After header, else 1 s, 2 s, …; never more than 10 s.
+    static func rateLimitDelay(retryAfter: String?, attempt: Int) -> Duration {
+        let seconds = retryAfter.flatMap { Double($0.trimmingCharacters(in: .whitespaces)) } ?? Double(1 << max(attempt - 1, 0))
+        return .milliseconds(Int(min(max(seconds, 0.5), 10) * 1000))
+    }
+
     func url(_ base: String, query: [(String, String)] = []) -> URL {
         var comps = URLComponents(string: base)!
         if !query.isEmpty {
@@ -51,8 +59,17 @@ nonisolated final class APIClient: Sendable {
             request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        var (data, response) = try await session.data(for: request)
+        var status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        // Rate limited: wait as told (Retry-After, capped) and try again, at most twice.
+        var retries = 0
+        while status == 429, retries < Self.maxRateLimitRetries {
+            retries += 1
+            let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
+            try await Task.sleep(for: Self.rateLimitDelay(retryAfter: header, attempt: retries))
+            (data, response) = try await session.data(for: request)
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        }
         guard (200..<300).contains(status) else {
             throw APIError.badStatus(status, String(decoding: data, as: UTF8.self))
         }

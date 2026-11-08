@@ -72,7 +72,7 @@ struct RecipesView: View {
 
     private var soonestSummary: String {
         app.sortedItems.filter { $0.daysUntilExpiry() >= 0 }.prefix(4).map {
-            "\($0.name) (\(ExpiryLabel.relative($0.daysUntilExpiry())))"
+            "\($0.name) (\($0.expiryLabel()))"
         }.joined(separator: ", ")
     }
 
@@ -164,7 +164,7 @@ struct RecipeCard: View {
         var parts: [Text] = []
         for match in scored.uses {
             if match.daysUntilExpiry <= 3 {
-                parts.append(Text("\(match.itemName) (exp. \(max(match.daysUntilExpiry, 0))d)").foregroundStyle(.orange).bold())
+                parts.append(Text("\(match.itemName) (\(match.expiryLabel))").foregroundStyle(.orange).bold())
             } else {
                 parts.append(Text(match.itemName))
             }

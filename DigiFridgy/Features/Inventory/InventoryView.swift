@@ -86,11 +86,12 @@ struct InventoryView: View {
                         NavigationLink(value: item.id) {
                             Label {
                                 VStack(alignment: .leading) {
-                                    Text("Recall: \(item.name)").bold()
+                                    Text("\(item.recallFlag?.isPossible == true ? "Possible recall" : "Recall"): \(item.name)").bold()
                                     Text(item.recallFlag?.reason ?? "").font(.caption).lineLimit(2)
                                 }
                             } icon: {
-                                Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red)
+                                Image(systemName: "exclamationmark.octagon.fill")
+                                    .foregroundStyle(item.recallFlag?.isPossible == true ? .orange : .red)
                             }
                         }
                         .listRowBackground(Color.red.opacity(0.12))
@@ -200,9 +201,9 @@ struct InventoryRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(item.name).font(.body.weight(.medium)).lineLimit(1)
-                    if item.recallFlag != nil {
-                        Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red)
-                            .accessibilityLabel("Recalled")
+                    if let flag = item.recallFlag {
+                        Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(flag.isPossible ? .orange : .red)
+                            .accessibilityLabel(flag.isPossible ? "Possible recall" : "Recalled")
                     }
                     if !item.allergenHits(for: app.userAllergens).isEmpty {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)

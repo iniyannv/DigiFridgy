@@ -65,7 +65,9 @@ $("form").addEventListener("submit", async (e) => {
   $("go").disabled = true;
   const body = Object.fromEntries(new FormData($("form")));
   try {
-    const r = await fetch("/signup", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+    const token = new URLSearchParams(location.search).get("token");
+    const headers = {"content-type": "application/json", ...(token ? {"x-demo-token": token} : {})};
+    const r = await fetch("/signup", {method: "POST", headers, body: JSON.stringify(body)});
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || "Sign-up failed");
     $("form").hidden = true;

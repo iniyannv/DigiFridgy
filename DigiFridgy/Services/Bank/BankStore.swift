@@ -60,6 +60,8 @@ nonisolated struct SettleDebt: Decodable, Sendable, Identifiable, Hashable {
     var amount: Double
     var items: [String]
     var id: String { "\(from_id)-\(to_id)" }
+    /// The bank moves whole dollars; this is what the confirm dialog shows and what gets quoted to the server.
+    var wholeDollars: Int { Int(amount.rounded(.down)) }
 }
 
 nonisolated struct SettleRoommate: Decodable, Sendable, Hashable, Identifiable {
@@ -164,19 +166,62 @@ final class BankStore {
         static let legacy = ["bank.householdID", "bank.handle", "bank.line", "bank.householdName"]
     }
 
-    /// Build setting DIGIFRIDGEY_SERVER (via Info.plist) lets a device build point at the Mac,
-    /// e.g. http://My-Mac.local:8010. The simulator falls back to localhost.
-    static let defaultServer: String = {
-        let s = (Bundle.main.object(forInfoDictionaryKey: "DigiFridgeyServer") as? String) ?? ""
-        return s.hasPrefix("http") ? s : "http://localhost:8010"
+    /// Build setting DIGIFRIDGEY_SERVER (Config/*.xcconfig → Info.plist), e.g. http://My-Mac.local:8010.
+    /// Empty when unset.
+    static let buildServer: String = normalizedServer(Bundle.main.object(forInfoDictionaryKey: "DigiFridgeyServer") as? String)
+
+    /// The build setting, else localhost in the Simulator. On a device there is no sensible fallback
+    /// (localhost is the phone itself), so it stays empty and Settings says so.
+    static var defaultServer: String {
+        if !buildServer.isEmpty { return buildServer }
+        #if targetEnvironment(simulator)
+        return "http://localhost:8010"
+        #else
+        return ""
+        #endif
+    }
+
+    /// "my-mac.local:8010" → "http://my-mac.local:8010"; unexpanded build variables → "".
+    nonisolated static func normalizedServer(_ raw: String?) -> String {
+        let s = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty, !s.hasPrefix("$(") else { return "" }
+        return s.contains("://") ? s : "http://" + s
+    }
+
+    /// Optional operator token (the server's DEMO_TOKEN), sent only as the X-Demo-Token header.
+    static let demoToken: String = {
+        let raw = ((Bundle.main.object(forInfoDictionaryKey: "DigiFridgeyToken") as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.hasPrefix("$(") ? "" : raw
     }()
 
-    /// Matches the server's DEMO_TOKEN, so other people on the Wi-Fi can't drive the demo.
-    static let token: String = (Bundle.main.object(forInfoDictionaryKey: "DigiFridgeyToken") as? String) ?? ""
+    /// The app's SpacetimeDB token. Every bank request carries it as `Authorization: Bearer`; the server
+    /// verifies it with SpacetimeDB and takes the caller (payer, household) from it.
+    var tokenProvider: () async -> String? = { nil }
 
-    private var authHeaders: [String: String] { Self.token.isEmpty ? [:] : ["X-Demo-Token": Self.token] }
+    private func headers() async -> [String: String] {
+        var h: [String: String] = [:]
+        if !Self.demoToken.isEmpty { h["X-Demo-Token"] = Self.demoToken }
+        if let token = await tokenProvider(), !token.isEmpty { h["Authorization"] = "Bearer \(token)" }
+        return h
+    }
 
-    var serverURL: String { didSet { UserDefaults.standard.set(serverURL, forKey: Keys.server) } }
+    /// Typed by the user in Settings; saved only when it differs from the build's default.
+    var serverURL: String {
+        didSet {
+            if serverURL == Self.defaultServer {
+                UserDefaults.standard.removeObject(forKey: Keys.server)
+            } else {
+                UserDefaults.standard.set(serverURL, forKey: Keys.server)
+            }
+        }
+    }
+    var isServerOverridden: Bool { serverURL != Self.defaultServer }
+
+    func resetServer() {
+        serverURL = Self.defaultServer
+        Task { await refresh() }
+    }
 
     /// The app household (SpacetimeDB id) the bank is looked up by.
     private(set) var appHouseholdID: String?
@@ -202,19 +247,19 @@ final class BankStore {
     // MARK: - Requests
 
     private func url(_ path: String, _ query: [(String, String)] = []) throws -> URL {
-        let base = serverURL.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard var comps = URLComponents(string: base + path), comps.host != nil else {
-            throw APIError.notConfigured("Server address")
+        let base = Self.normalizedServer(serverURL).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !base.isEmpty, var comps = URLComponents(string: base + path), comps.host != nil else {
+            throw BankError(message: "No DigiFridgey server set. Enter its address in Settings → Bank & iMessage, or set DIGIFRIDGEY_SERVER in Config/Secrets.xcconfig and rebuild.")
         }
         if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.0, value: $0.1) } }
         return comps.url!
     }
 
     private func post<T: Decodable>(_ path: String, query: [(String, String)] = [], body: [String: String]? = nil,
-                                    as type: T.Type) async throws -> T {
+                                    headers extra: [String: String] = [:], as type: T.Type) async throws -> T {
         var request = URLRequest(url: try url(path, query))
         request.httpMethod = "POST"
-        authHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        (await headers()).merging(extra) { $1 }.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         request.timeoutInterval = 30
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -223,14 +268,14 @@ final class BankStore {
         return try await APIClient.shared.send(request, as: type)
     }
 
-    private var bankQuery: [(String, String)] {
-        household.map { [("household_id", String($0.id))] } ?? []
-    }
+    /// The server takes the caller's bank household from the bearer token; nothing to send.
+    private var bankQuery: [(String, String)] { [] }
 
     /// Turns the backend's {"detail": "..."} errors into a readable sentence.
     private func message(for error: Error) -> String {
+        if let bank = error as? BankError { return bank.message }
         if case APIError.badStatus(401, _) = error {
-            return "The server at \(serverURL) needs an access token. Set DIGIFRIDGEY_TOKEN to the server's DEMO_TOKEN and rebuild."
+            return "The server at \(serverURL) didn't accept this app's sign-in. Sign out and back in, or check the server can reach SpacetimeDB."
         }
         if case APIError.badStatus(_, let body) = error,
            let data = body.data(using: .utf8),
@@ -266,10 +311,9 @@ final class BankStore {
     func refresh() async {
         guard let appHouseholdID else { return }
         do {
-            var query = [("app_household_id", appHouseholdID)]
-            if let appIdentity { query.append(("app_identity", appIdentity)) }
-            let s = try await APIClient.shared.get(BankState.self, from: try url("/demo/state", query),
-                                                   headers: authHeaders)
+            // Who's asking comes from the bearer token, not from query parameters.
+            let s = try await APIClient.shared.get(BankState.self, from: try url("/demo/state", [("app_household_id", appHouseholdID)]),
+                                                   headers: await headers())
             guard appHouseholdID == self.appHouseholdID else { return }
             state = s
             status = s.household == nil ? .notLinked : .linked
@@ -290,7 +334,6 @@ final class BankStore {
         defer { isBusy = false }
         var body = ["first_name": firstName, "phone": phone, "app_invite_code": inviteCode]
         if !lastName.isEmpty { body["last_name"] = lastName }
-        if let appIdentity { body["app_identity"] = appIdentity }
         let r: BankSignupResponse
         do {
             r = try await post("/signup", body: body, as: BankSignupResponse.self)
@@ -331,7 +374,7 @@ final class BankStore {
     func cardPurchases() async throws -> [CardPurchase] {
         do {
             return try await APIClient.shared.get(CardPurchaseList.self, from: try url("/demo/purchases", bankQuery),
-                                                  headers: authHeaders).purchases
+                                                  headers: await headers()).purchases
         } catch {
             throw BankError(message: message(for: error))
         }
@@ -344,7 +387,7 @@ final class BankStore {
         var request = URLRequest(url: try url("/demo/purchases/\(purchase.purchase_id)/stock", bankQuery))
         request.httpMethod = "POST"
         request.timeoutInterval = 30
-        authHeaders.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        (await headers()).forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["lines": Array(lines).sorted()])
         do {
@@ -359,25 +402,57 @@ final class BankStore {
 
     // MARK: - Roommates
 
+    /// The payer is the caller (from the bearer token); only the fridge is named.
     private var settleQuery: [(String, String)] {
-        guard let appHouseholdID, let me = household?.id else { return [] }
-        return [("app_household_id", appHouseholdID), ("household_id", String(me))]
+        guard let appHouseholdID, household != nil else { return [] }
+        return [("app_household_id", appHouseholdID)]
     }
+
+    private(set) var settleError: String?
 
     func refreshSettle() async {
         guard !settleQuery.isEmpty else { return }
-        if let s = try? await APIClient.shared.get(SettleState.self, from: try url("/demo/settle", settleQuery),
-                                                   headers: authHeaders) {
-            settle = s
+        do {
+            settle = try await APIClient.shared.get(SettleState.self, from: try url("/demo/settle", settleQuery),
+                                                    headers: await headers())
+            settleError = nil
+        } catch is CancellationError {
+        } catch {
+            if (error as? URLError)?.code == .cancelled { return }
+            settleError = message(for: error)
         }
     }
 
-    /// Sends a roommate what you owe them (a Nessie transfer). Call only after the person confirmed.
-    func pay(_ debt: SettleDebt) async throws -> String {
-        let r = try await guarded { try await self.post("/demo/settle/pay", query: self.settleQuery + [("to", String(debt.to_id))],
-                                                        as: SettleResult.self) }
+    /// Sends a roommate what you owe them (a Nessie transfer). Call only after the person confirmed
+    /// `quoted` whole dollars. If the split changed since, nothing moves and the error carries the new debt
+    /// (`BankError.changedDebt`) so the dialog can ask again.
+    func pay(_ debt: SettleDebt, quoted: Int) async throws -> String {
+        isBusy = true
+        defer { isBusy = false }
+        // Re-check right before paying: a refresh may have changed the debt while the dialog was open.
+        await refreshSettle()
+        let current = settle?.debts.first { $0.id == debt.id }
+        if let current, current.wholeDollars != quoted {
+            throw BankError(message: "The split changed to $\(current.wholeDollars) since you opened this. Confirm again.",
+                            changedDebt: current)
+        }
+        if current == nil, settle != nil {
+            throw BankError(message: "You don't owe \(debt.to_name) anything now, so nothing moved.")
+        }
+        let r: SettleResult
+        do {
+            r = try await post("/demo/settle/pay",
+                               query: settleQuery + [("to", String(debt.to_id)), ("quoted_amount", String(quoted))],
+                               headers: ["Idempotency-Key": UUID().uuidString], as: SettleResult.self)
+        } catch {
+            throw BankError(message: message(for: error))
+        }
         await refresh()
-        if r.ok == false { throw BankError(message: r.message) }
+        if r.ok == false {
+            // e.g. "The split changed to $X …": show it and re-confirm with the new amount.
+            let fresh = settle?.debts.first { $0.id == debt.id }
+            throw BankError(message: r.message, changedDebt: fresh.flatMap { $0.wholeDollars >= 1 && $0.wholeDollars != quoted ? $0 : nil })
+        }
         return r.message
     }
 
@@ -398,6 +473,7 @@ final class BankStore {
 
     /// Demo: a roommate texts USED <item>.
     func roommateUses(_ roommate: SettleRoommate, item: String) async throws -> String {
+        // Names the demo roommate who used it (not the caller); the server checks they share the caller's fridge.
         let r = try await guarded { try await self.post("/demo/roommate/use", query: [("household_id", String(roommate.id))],
                                                         body: ["item": item], as: RoommateUseResult.self) }
         await refresh()
@@ -425,6 +501,8 @@ final class BankStore {
 
 struct BankError: LocalizedError {
     var message: String
+    /// Set when a payment didn't go through because the amount changed: the debt to confirm again.
+    var changedDebt: SettleDebt? = nil
     var errorDescription: String? { message }
 }
 

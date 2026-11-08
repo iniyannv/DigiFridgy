@@ -10,7 +10,11 @@ nonisolated struct Recall: Codable, Identifiable, Hashable, Sendable {
     var classification: String?
     var url: String
 
-    var asFlag: RecallFlag { RecallFlag(recallId: id, reason: reason, date: date, url: url) }
+    var asFlag: RecallFlag { flag(confidence: .confirmed) }
+
+    func flag(confidence: RecallConfidence) -> RecallFlag {
+        RecallFlag(recallId: id, reason: reason, date: date, url: url, confidence: confidence)
+    }
 }
 
 /// Info returned by a product lookup (barcode or name).

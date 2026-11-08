@@ -93,8 +93,9 @@
 let HANDLE = "+15555550123";
 let HH = "";
 const hhq = () => HH ? "&household_id=" + HH : "";
-const token = new URLSearchParams(location.search).get("token");
-const H = token ? {"x-demo-token": token} : {};
+const params = new URLSearchParams(location.search);
+const token = params.get("token"), admin = params.get("admin");
+const H = {...(token ? {"x-demo-token": token} : {}), ...(admin ? {"x-admin-token": admin} : {})};
 const $ = (id) => document.getElementById(id);
 const usd = (x) => x == null ? "–" : "$" + Number(x).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }

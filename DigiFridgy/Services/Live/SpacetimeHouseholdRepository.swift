@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Household data in SpacetimeDB (module: `server/spacetimedb`).
 /// Reads come from per-caller views (`my_profile`, `my_household`, `my_items`, `my_shopping`, `my_prices`),
@@ -6,6 +7,7 @@ import Foundation
 /// Live updates: a WebSocket subscription to the views pushes every change as it commits; while it's down,
 /// the views are polled every couple of seconds and re-read right after each local write.
 final class SpacetimeHouseholdRepository: HouseholdRepository {
+    private static let log = Logger(subsystem: "DigiFridgy", category: "repository")
     private let client: SpacetimeClient
     private let pollInterval: Duration
 
@@ -30,6 +32,10 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     private(set) var identityHex: String?
     /// The published module predates `use_item`: fall back to plain count changes.
     private var useItemMissing = false
+    /// Rows whose `data` couldn't be decoded (logged; a non-zero count means a schema mismatch).
+    private(set) var droppedRowCount = 0
+    /// Latest subscription update per table, so an older off-main decode never overwrites a newer one.
+    private var decodeGeneration: [String: Int] = [:]
 
     init(client: SpacetimeClient, pollInterval: Duration = .seconds(2)) {
         self.client = client
@@ -102,12 +108,61 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
     }
 
     private func decodeItems(_ rows: [SpacetimeClient.Row]) -> [FridgeItem] {
-        rows.compactMap { row in
-            guard var item = try? decoder.decode(FridgeItem.self, from: Data(row.string("data").utf8)) else { return nil }
-            item.id = row.string("id")
-            item.count = row.int("count")
-            return item
+        let items = rows.compactMap { row in
+            Self.item(id: row.string("id"), count: row.int("count"), data: row.string("data"), decoder: decoder)
         }
+        noteDropped(rows.count - items.count, table: "my_items")
+        return items
+    }
+
+    nonisolated private static func item(id: String, count: Int, data: String, decoder: JSONDecoder) -> FridgeItem? {
+        guard var item = try? decoder.decode(FridgeItem.self, from: Data(data.utf8)) else { return nil }
+        item.id = id
+        item.count = count
+        return item
+    }
+
+    private func noteDropped(_ count: Int, table: String) {
+        guard count > 0 else { return }
+        droppedRowCount += count
+        Self.log.error("\(count) \(table, privacy: .public) row(s) couldn't be decoded (\(self.droppedRowCount) so far)")
+    }
+
+    /// Subscription rows are JSON arrays in the view's column order. Extra (new) columns are ignored;
+    /// rows with too few columns are dropped. Runs off the main actor: a full table can be large.
+    @concurrent
+    nonisolated private static func decodeRows(_ rows: [String], columns: [String], table: String) async
+        -> (items: [FridgeItem], shopping: [ShoppingListItem], dropped: Int) {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        var items: [FridgeItem] = []
+        var shopping: [ShoppingListItem] = []
+        var dropped = 0
+        for json in rows {
+            guard let values = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [Any],
+                  values.count >= columns.count else { dropped += 1; continue }
+            var row: SpacetimeClient.Row = [:]
+            for (name, value) in zip(columns, values) { row[name] = SpacetimeClient.unwrapOption(value) }
+            switch table {
+            case "my_items":
+                if let item = item(id: row.string("id"), count: row.int("count"), data: row.string("data"), decoder: decoder) {
+                    items.append(item)
+                } else {
+                    dropped += 1
+                }
+            case "my_shopping":
+                if var entry = try? decoder.decode(ShoppingListItem.self, from: Data(row.string("data").utf8)) {
+                    entry.id = row.string("id")
+                    shopping.append(entry)
+                } else {
+                    dropped += 1
+                }
+            default:
+                break
+            }
+        }
+        shopping.sort { ($0.addedAt, $0.id) > ($1.addedAt, $1.id) }
+        return (items, shopping, dropped)
     }
 
     func itemsStream(householdId: String) -> AsyncThrowingStream<[FridgeItem], any Error> {
@@ -137,12 +192,19 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
                 .init(table: "my_items", columns: ["id", "count", "data", "updated_at_ms"]),
                 .init(table: "my_shopping", columns: ["id", "data"]),
             ])
-            subscription.onRows = { [weak self] table, rows in
+            subscription.onRawRows = { [weak self] table, columns, rows in
                 guard let self else { return }
-                switch table {
-                case "my_items": self.publishItems(self.decodeItems(rows))
-                case "my_shopping": self.publishShopping(self.decodeShopping(rows))
-                default: break
+                let generation = (self.decodeGeneration[table] ?? 0) + 1
+                self.decodeGeneration[table] = generation
+                Task { [weak self] in
+                    let decoded = await Self.decodeRows(rows, columns: columns, table: table)
+                    guard let self, self.decodeGeneration[table] == generation else { return }
+                    self.noteDropped(decoded.dropped, table: table)
+                    switch table {
+                    case "my_items": self.publishItems(decoded.items)
+                    case "my_shopping": self.publishShopping(decoded.shopping)
+                    default: break
+                    }
                 }
             }
             live = subscription
@@ -153,14 +215,15 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
                 var failures = 0
                 while !Task.isCancelled {
                     guard let self else { return }
+                    var delay = self.pollInterval
                     if self.live?.isConnected != true {
                         do {
                             try await self.pollOnce()
+                            if failures > 0 { Self.log.info("polling recovered after \(failures) failure(s)") }
                             failures = 0
                         } catch {
-                            failures += 1
-                            // Transient network blips are fine; surface persistent failures (e.g. auth) once.
-                            if failures == 3 || Self.isFatal(error) {
+                            if Self.isFatal(error) {
+                                // Signed out / token rejected: retrying can't help, so end the streams.
                                 self.itemContinuations.values.forEach { $0.finish(throwing: error) }
                                 self.shoppingContinuations.values.forEach { $0.finish(throwing: error) }
                                 self.itemContinuations = [:]
@@ -168,9 +231,13 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
                                 self.stopLiveIfIdle()
                                 return
                             }
+                            // Offline or a server hiccup: keep the streams open and retry with capped backoff.
+                            failures += 1
+                            Self.log.error("poll failed (\(failures)): \(error.localizedDescription, privacy: .public)")
+                            delay = Self.backoff(base: self.pollInterval, failures: failures)
                         }
                     }
-                    try? await Task.sleep(for: self.pollInterval)
+                    try? await Task.sleep(for: delay)
                 }
             }
         }
@@ -241,7 +308,7 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
                 try await client.call("use_item", [id, qty, name])
                 await refreshItems()
                 return
-            } catch SpacetimeError.server(let code, let body) where code == 404 || body.contains("use_item") {
+            } catch let error as SpacetimeError where Self.isMissingReducer(error, named: "use_item") {
                 useItemMissing = true
             }
         }
@@ -310,6 +377,24 @@ final class SpacetimeHouseholdRepository: HouseholdRepository {
         try await client.call("save_price", [history.upc, history.lastPrice, history.lastStoreId])
     }
 
+    /// Poll delay after `failures` consecutive failures: doubles from `base`, capped at 30 s.
+    nonisolated static func backoff(base: Duration, failures: Int) -> Duration {
+        min(base * (1 << min(failures, 5)), .seconds(30))
+    }
+
+    /// The module doesn't have this reducer (older publish), whatever HTTP status it came with.
+    nonisolated static func isMissingReducer(_ error: SpacetimeError, named reducer: String) -> Bool {
+        let text: String
+        switch error {
+        case .server(_, let body), .reducer(let body), .badResponse(let body): text = body.lowercased()
+        default: return false
+        }
+        // Not plain "not found": the reducer itself says that about a missing item.
+        let generic = ["no such reducer", "reducer not found", "unknown reducer"]
+        return generic.contains { text.contains($0) }
+            || (text.contains(reducer.lowercased()) && text.contains("does not exist"))
+    }
+
     private static func isFatal(_ error: any Error) -> Bool {
         switch error as? SpacetimeError {
         case .unauthorized, .notSignedIn, .notConfigured: true
@@ -340,8 +425,15 @@ final class SpacetimeAuthService: AuthService {
 
     func signInAnonymously() async throws -> AuthUser {
         let (identity, token) = try await client.createIdentity()
-        Keychain.set(token, for: Self.tokenKey)
-        Keychain.set(identity, for: Self.identityKey)
+        do {
+            try Keychain.set(token, for: Self.tokenKey)
+            try Keychain.set(identity, for: Self.identityKey)
+        } catch {
+            // Half-saved credentials would lose the identity on the next launch: save both or neither.
+            Keychain.delete(Self.tokenKey)
+            Keychain.delete(Self.identityKey)
+            throw error
+        }
         return AuthUser(uid: identity, email: nil, isAnonymous: true)
     }
 

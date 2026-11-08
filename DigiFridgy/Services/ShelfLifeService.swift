@@ -45,8 +45,10 @@ nonisolated final class ShelfLifeService: Sendable {
 
     func fridgeDays(for id: String) -> Int { byID[id]?.fridgeDays ?? defaultDays }
 
-    func estimatedExpiry(categoryID: String, from date: Date = .now) -> Date {
-        Calendar.current.date(byAdding: .day, value: fridgeDays(for: categoryID), to: date) ?? date
+    /// Start of the day `fridgeDays` after `date` (expiry is a calendar day, not an instant).
+    func estimatedExpiry(categoryID: String, from date: Date = .now, calendar: Calendar = .current) -> Date {
+        let start = calendar.startOfDay(for: date)
+        return calendar.date(byAdding: .day, value: fridgeDays(for: categoryID), to: start) ?? start
     }
 
     /// Maps Open Food Facts `categories_tags` (ordered general → specific) to a category id.

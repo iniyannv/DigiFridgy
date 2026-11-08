@@ -8,6 +8,12 @@ struct ReceiptScanSheet: View {
     @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
 
+    /// What one unit cost: the receipt line's total split over its quantity.
+    nonisolated static func unitPrice(lineTotal: Double?, count: Int) -> Double? {
+        guard let lineTotal, lineTotal > 0 else { return nil }
+        return (lineTotal / Double(max(count, 1)) * 100).rounded() / 100
+    }
+
     struct Draft: Identifiable, Hashable {
         let id = UUID()
         var include = true
@@ -206,7 +212,8 @@ struct ReceiptScanSheet: View {
                 name: draft.name, category: draft.category, count: draft.count, addedBy: uid,
                 expiresAt: app.shelfLife.estimatedExpiry(categoryID: draft.category),
                 source: .receipt, nutrition: nutrition[draft.id],
-                allergens: Allergen.implied(byCategory: draft.category).map(\.rawValue)
+                allergens: Allergen.implied(byCategory: draft.category).map(\.rawValue),
+                price: ReceiptScanSheet.unitPrice(lineTotal: draft.price, count: draft.count)
             )
         }
         if await app.saveReceiptItems(items) {

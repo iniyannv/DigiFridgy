@@ -91,7 +91,11 @@ struct PriceComparisonView: View {
         self.target = PriceTarget(item: item)
     }
 
-    private var cheapestID: String? { quotes.first(where: \.hasPrice)?.id }
+    /// Cheapest *live* price; only when there are no live prices does a sample one get the star (labeled sample).
+    private var cheapestID: String? {
+        quotes.first(where: { $0.hasPrice && !$0.isSample })?.id ?? quotes.first(where: \.hasPrice)?.id
+    }
+    private var cheapestIsSample: Bool { quotes.first { $0.id == cheapestID }?.isSample ?? false }
 
     var body: some View {
         List {
@@ -138,7 +142,7 @@ struct PriceComparisonView: View {
                     }
                 }
             } header: {
-                Text("Cheapest first")
+                Text(cheapestIsSample ? "Cheapest first (sample prices)" : "Cheapest first")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
                     if quotes.contains(where: { $0.store.isKroger && !$0.isSample }) {
@@ -185,14 +189,20 @@ struct PriceComparisonView: View {
             }
             ForEach(quotes) { quote in
                 let cheapest = quote.id == cheapestID
-                Marker(quote.effectivePrice?.usd ?? "N/A",
+                Marker(Self.markerTitle(quote),
                        systemImage: cheapest ? "star.fill" : (quote.hasPrice ? "cart.fill" : "xmark"),
                        coordinate: quote.store.coordinate.clCoordinate)
-                    .tint(cheapest ? .green : (quote.isSample || !quote.hasPrice ? .gray : .blue))
+                    .tint(cheapest && !quote.isSample ? .green : (quote.isSample || !quote.hasPrice ? .gray : .blue))
                     .tag(quote.id)
             }
         }
         .mapControls { MapCompass() }
+    }
+
+    /// Map markers can't show the badge, so sample prices say so in their title.
+    static func markerTitle(_ quote: PriceQuote) -> String {
+        guard let price = quote.effectivePrice?.usd else { return "N/A" }
+        return quote.isSample ? "\(price) · Sample" : price
     }
 
     private func load() async {

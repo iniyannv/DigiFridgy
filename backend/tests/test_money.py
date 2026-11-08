@@ -150,7 +150,7 @@ def test_roommate_who_eats_owes_the_payer(flat):
     assert set(state.debts[0].items) == {"whole milk", "eggs"}
     # The backend's iMessage use also went into SpacetimeDB's shared log, next to the app taps.
     assert {u["name"].lower() for u in ctx.spacetime.households[app_household(ctx, alex)].uses} \
-        == {"whole milk", "eggs", "yogurt"}
+        == {"whole milk", "eggs", "greek yogurt"}  # names come from the item row, not the client
 
 
 def test_settle_needs_yes_and_pays_once(flat):
@@ -171,6 +171,10 @@ def test_settle_needs_yes_and_pays_once(flat):
     # 47 cents left: below a dollar, so no new offer and a second YES does nothing.
     state = run(money.settle_state(ctx, app_household(ctx, alex)))
     assert [(d.from_id, round(d.amount, 2)) for d in state.debts] == [(sam.id, 0.47)]
+    # The settle offer no longer replaces the open "add milk to your list?" question, so this YES
+    # answers that one, and no money moves.
+    again = run(answer_yes_no(ctx, sam, True))
+    assert "Sent" not in again and len(ctx.nessie.state["transfers"]) == transfers_before + 1
     assert run(answer_yes_no(ctx, sam, True)).startswith("Nothing is waiting on a yes/no")
     with Session(ctx.engine) as s:
         assert len(list(s.exec(select(Settlement)))) == 1

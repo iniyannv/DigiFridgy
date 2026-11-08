@@ -1,0 +1,4 @@
+10:39:25  [A] CUT START: retake of household creation (first try named 'The', left it)
+10:39:36  [A] CUT END: clean take resumes — 'The Apartment' typed, tapping Create
+10:41:20  [A] Seeded real-barcode demo (Settings > Developer). Watch Jordan's phone fill in.
+10:47:54  [A] CUT: allergen toggle attempts (Milk won't stay on — app bug), end of usable footage before this

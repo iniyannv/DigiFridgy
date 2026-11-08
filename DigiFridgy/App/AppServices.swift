@@ -154,7 +154,8 @@ final class AppServices {
             ("Target search (RedCircle)", targetSearch.isLive),
             // USDA FSIS (meat, poultry, egg products) has no public API an app can call.
             ("Recalls: FDA only (openFDA)", !isMock),
-            ("On-device model (receipts)", normalizer.usesOnDeviceModel),
+            // Hidden while receipt scanning is hidden from users.
+            // ("On-device model (receipts)", normalizer.usesOnDeviceModel),
         ]
     }
 }

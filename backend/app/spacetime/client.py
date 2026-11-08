@@ -42,7 +42,7 @@ class SpacetimeError(Exception):
 
 def is_unknown_reducer(e: BaseException) -> bool:
     """The module has no such reducer (it was published before the reducer existed)."""
-    return isinstance(e, SpacetimeError) and e.status == 404 and "no such reducer" in e.body.lower()
+    return isinstance(e, SpacetimeError) and e.status == 404 and any(m in e.body.lower() for m in ("no such reducer", "no such procedure"))
 
 
 def not_applied(e: BaseException) -> bool:

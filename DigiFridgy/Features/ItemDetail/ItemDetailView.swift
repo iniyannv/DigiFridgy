@@ -95,8 +95,9 @@ struct ItemDetailView: View {
                     if let price = item.price {
                         LabeledContent("Price", value: "\(price.usd) each")
                     }
-                } else {
-                    LabeledContent("Source", value: item.source == .barcode ? "Barcode scan" : "Receipt scan")
+                } else if item.source == .barcode {
+                    // Non-barcode items no longer say "Receipt scan": receipt scanning is hidden from users.
+                    LabeledContent("Source", value: "Barcode scan")
                 }
             }
 

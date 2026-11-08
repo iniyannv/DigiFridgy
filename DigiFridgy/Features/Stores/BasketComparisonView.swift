@@ -177,6 +177,9 @@ struct BasketComparisonView: View {
     @State private var radius: Double = 10
     @State private var didLoadRadius = false
     @State private var expanded: Set<String> = []
+    @State private var position: MapCameraPosition = .automatic
+    @State private var userCoordinate: Coordinate?
+    @State private var selectedStoreID: String?
 
     private var targets: [PriceTarget] { entries.map { PriceTarget(name: $0.name, upc: $0.barcode) } }
     private var best: StoreBasket? { baskets.first { $0.isComplete } ?? baskets.first }
@@ -184,6 +187,12 @@ struct BasketComparisonView: View {
 
     var body: some View {
         List {
+            Section {
+                map
+                    .frame(height: 260)
+                    .listRowInsets(EdgeInsets())
+            }
+
             if let best, !isLoading || !baskets.isEmpty {
                 Section { summary(best) }
             }
@@ -231,6 +240,7 @@ struct BasketComparisonView: View {
                             BasketRow(basket: basket, isBest: basket.id == best?.id, isExpanded: isExpanded)
                         }
                         .buttonStyle(.plain)
+                        .listRowBackground(basket.id == selectedStoreID ? Color.accentColor.opacity(0.12) : nil)
                         .accessibilityHint(isExpanded ? "Hides item prices" : "Shows each item's price")
                         .contextMenu {
                             Button("Directions", systemImage: "car") { openInMaps(basket.store) }
@@ -252,7 +262,7 @@ struct BasketComparisonView: View {
                     if baskets.contains(where: { $0.store.isKroger && !$0.isAllSample }) {
                         Text("Kroger prices are live for each store. Walmart uses walmart.com prices.")
                     }
-                    Text("Tap a store to see each item's price.")
+                    Text("Tap a store to see each item's price, or a map pin to jump to it.")
                 }
             }
         }
@@ -266,6 +276,32 @@ struct BasketComparisonView: View {
             }
             await load()
         }
+        .onChange(of: selectedStoreID) { _, id in
+            guard let id else { return }
+            withAnimation(.snappy) { _ = expanded.insert(id) }
+        }
+    }
+
+    private var map: some View {
+        Map(position: $position, selection: $selectedStoreID) {
+            if let userCoordinate {
+                Annotation("You", coordinate: userCoordinate.clCoordinate) {
+                    Image(systemName: "person.fill")
+                        .padding(6)
+                        .background(.blue, in: .circle)
+                        .foregroundStyle(.white)
+                }
+            }
+            ForEach(baskets) { basket in
+                let isBest = basket.id == best?.id
+                Marker(basket.isAllSample ? "\(basket.total.usd) · Sample" : basket.total.usd,
+                       systemImage: isBest ? "star.fill" : "cart.fill",
+                       coordinate: basket.store.coordinate.clCoordinate)
+                    .tint(isBest && !basket.isAllSample ? .green : (basket.isAllSample ? .gray : .blue))
+                    .tag(basket.id)
+            }
+        }
+        .mapControls { MapCompass() }
     }
 
     private func summary(_ best: StoreBasket) -> some View {
@@ -299,10 +335,12 @@ struct BasketComparisonView: View {
         isLoading = true
         defer { isLoading = false }
         let coordinate = await app.currentCoordinate()
+        userCoordinate = coordinate
         do {
             baskets = try await BasketPriceFinder(services: app.services)
                 .baskets(for: targets, quantities: entries.map(\.count), near: coordinate, radiusMiles: radius)
             errorMessage = nil
+            position = .automatic
         } catch {
             errorMessage = error.localizedDescription
             if !baskets.isEmpty { app.showError(error) }

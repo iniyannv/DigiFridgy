@@ -291,8 +291,18 @@ final class BankStore {
     /// Turns the backend's {"detail": "..."} errors into a readable sentence.
     private func message(for error: Error) -> String {
         if let bank = error as? BankError { return bank.message }
-        if case APIError.badStatus(401, _) = error {
-            return "Your sign-in wasn't accepted. Sign out and back in, then try again."
+        if case APIError.badStatus(401, let body) = error {
+            // Keep the server's reason: "bad demo token" (build without DIGIFRIDGEY_TOKEN) needs a rebuild,
+            // not a sign-out, and the others say which part of sign-in failed.
+            var detail: String?
+            if let data = body.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                detail = json["detail"] as? String
+            }
+            if detail == "bad demo token" {
+                return "This build can't reach card connection (missing or outdated server token). Reinstall the latest build."
+            }
+            return "Your sign-in wasn't accepted\(detail.map { " (\($0))" } ?? ""). Sign out and back in, then try again."
         }
         if case APIError.badStatus(_, let body) = error,
            let data = body.data(using: .utf8),

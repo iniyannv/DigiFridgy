@@ -104,7 +104,8 @@ struct InventoryView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Scan barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
-                Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
+                // Receipt scanning is hidden from users (ReceiptScanSheet is kept, just not offered).
+                // Button("Scan receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
                 if bank.isLinked {
                     Button("Add from card", systemImage: "creditcard") { showCardPurchases = true }
                 } else if bank.status == .notLinked {
@@ -280,8 +281,9 @@ struct InventoryView: View {
         } actions: {
             Button("Scan a barcode", systemImage: "barcode.viewfinder") { showBarcodeScanner = true }
                 .buttonStyle(.glassProminent)
-            Button("Scan a receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
-                .buttonStyle(.glass)
+            // Receipt scanning is hidden from users.
+            // Button("Scan a receipt", systemImage: "doc.text.viewfinder") { showReceiptScanner = true }
+            //     .buttonStyle(.glass)
             if bank.isLinked {
                 Button("Add from your card") { showCardPurchases = true }
                     .font(.footnote)

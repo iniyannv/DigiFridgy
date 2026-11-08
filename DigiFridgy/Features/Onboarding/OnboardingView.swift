@@ -29,7 +29,7 @@ struct OnboardingView: View {
                     .padding(.top, 40)
 
                     VStack(alignment: .leading, spacing: 14) {
-                        FeatureRow(symbol: "barcode.viewfinder", text: "Scan a barcode or receipt to add food")
+                        FeatureRow(symbol: "barcode.viewfinder", text: "Scan a barcode to add food")
                         FeatureRow(symbol: "calendar.badge.clock", text: "A heads-up before things expire")
                         FeatureRow(symbol: "fork.knife", text: "Recipes that use expiring food first")
                         FeatureRow(symbol: "person.2.fill", text: "One fridge shared with your household")

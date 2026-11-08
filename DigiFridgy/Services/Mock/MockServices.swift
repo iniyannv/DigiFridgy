@@ -235,6 +235,11 @@ final class MockKrogerService: KrogerService {
     func price(upc: String?, term: String, locationId: String) async throws -> KrogerPrice? { nil }
 }
 
+final class MockWalmartService: WalmartService {
+    var isLive: Bool { false }
+    func price(upc: String?, term: String) async throws -> KrogerPrice? { nil }
+}
+
 final class MockStoreSearchService: StoreSearchService {
     func stores(near: Coordinate, radiusMiles: Double, chains: [OtherChain]) async -> [Store] {
         chains.enumerated().compactMap { idx, chain in

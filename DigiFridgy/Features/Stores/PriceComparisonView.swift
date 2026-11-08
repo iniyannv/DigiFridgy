@@ -23,6 +23,15 @@ struct PriceTarget: Hashable {
 struct StoresTabView: View {
     @Environment(AppState.self) private var app
 
+    static func footer(kroger: Bool, walmart: Bool) -> String {
+        switch (kroger, walmart) {
+        case (true, true): "Kroger prices are live and Walmart shows walmart.com prices. Other stores are real nearby locations with sample prices."
+        case (true, false): "Kroger prices are live. Other stores are real nearby locations with sample prices."
+        case (false, true): "Walmart shows walmart.com prices. Other stores are real nearby locations with sample prices."
+        case (false, false): "Prices are samples at real nearby stores."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -71,9 +80,7 @@ struct StoresTabView: View {
                 } header: {
                     Text("In your fridge")
                 } footer: {
-                    Text(app.services.kroger.isLive
-                         ? "Kroger prices are live. Other stores are real nearby locations with sample prices."
-                         : "Prices are samples at real nearby stores.")
+                    Text(Self.footer(kroger: app.services.kroger.isLive, walmart: app.services.walmart.isLive))
                 }
             }
     }
@@ -176,6 +183,9 @@ struct PriceComparisonView: View {
                     if quotes.contains(where: { $0.store.isKroger && !$0.isSample }) {
                         Text("Kroger-family prices are live from the Kroger API. “Not carried” means that store doesn't stock this product.")
                     }
+                    if quotes.contains(where: { $0.availability == .online }) {
+                        Text("Walmart prices are walmart.com prices from the Walmart API. The shelf price at a store can differ.")
+                    }
                     if quotes.contains(where: \.isSample) {
                         Text("“Sample price” rows use real store locations with generated prices — those chains don't offer a public price API.")
                     }
@@ -271,7 +281,7 @@ private struct QuoteRow: View {
 
     private var iconColor: Color {
         if isCheapest { return Tone.success.color }
-        return quote.availability == .live ? Tone.info.color : .secondary
+        return quote.availability == .live || quote.availability == .online ? Tone.info.color : .secondary
     }
 
     var body: some View {
@@ -284,10 +294,11 @@ private struct QuoteRow: View {
                 HStack(spacing: 6) {
                     Text(quote.store.chain).font(.body.weight(.semibold))
                     if quote.isSample { SampleBadge() }
+                    if quote.availability == .online { StatusChip(text: "Walmart.com", tone: .info) }
                 }
                 Text(quote.store.name == quote.store.chain ? quote.store.address : quote.store.name)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if quote.availability == .live, let description = quote.productDescription {
+                if quote.availability == .live || quote.availability == .online, let description = quote.productDescription {
                     Text(description).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Text(Measurement(value: quote.store.distanceMiles, unit: UnitLength.miles)
@@ -305,7 +316,7 @@ private struct QuoteRow: View {
                     Text("Price unavailable")
                         .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                     Text("Try again later").font(.caption2).foregroundStyle(.tertiary)
-                case .live, .sample:
+                case .live, .online, .sample:
                     if let effective = quote.effectivePrice {
                         Text(effective.usd)
                             .font(.title3.weight(.bold).monospacedDigit())

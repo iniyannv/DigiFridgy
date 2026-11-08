@@ -606,6 +606,27 @@ final class AppState {
         }
     }
 
+    /// Adds several items at once (a recipe's missing ingredients), skipping ones already on the list.
+    func addToShoppingList(names: [String]) {
+        guard let hid = householdId else { return }
+        let onList = Set(shoppingList.filter { !$0.done }.map { $0.name.lowercased() })
+        var seen = Set<String>()
+        let new = names.filter { !onList.contains($0.lowercased()) && seen.insert($0.lowercased()).inserted }
+        guard !new.isEmpty else {
+            showMessage(names.count == 1 ? "\(names[0]) is already on the list" : "Those are already on the list")
+            return
+        }
+        Task {
+            do {
+                for name in new {
+                    try await services.repository.saveShoppingItem(ShoppingListItem(name: name, barcode: nil), householdId: hid)
+                }
+                showMessage(new.count == 1 ? "Added \(new[0]) to the shopping list"
+                                           : "Added \(new.count) items to the shopping list")
+            } catch { showError(error) }
+        }
+    }
+
     /// "I'll get it": the household (and its iMessage group) sees who's buying it. Tap again to let it go.
     func toggleClaim(_ entry: ShoppingListItem) {
         guard let hid = householdId else { return }

@@ -42,11 +42,61 @@ nonisolated struct RecipeScorer: Sendable {
             return seen.insert(term).inserted ? term : nil
         }
         guard !terms.isEmpty else { return [] }
+        // The combined query finds recipes that use several of them; one query per item keeps the list varied.
         var queries = [terms.prefix(3).joined(separator: " ")]
-        if terms.count >= 2 { queries.append(terms.prefix(2).joined(separator: " ")) }
         queries += terms.prefix(3)
         var unique = Set<String>()
         return queries.filter { unique.insert($0).inserted }
+    }
+
+    /// A fridge ingredient you can pick to cook with: its generic name, soonest expiry and category.
+    struct Ingredient: Identifiable, Hashable, Sendable {
+        var term: String
+        var daysUntilExpiry: Int
+        var category: String
+        var id: String { term }
+        var isExpiringSoon: Bool { daysUntilExpiry <= 3 }
+    }
+
+    /// Unique generic ingredients in the fridge (not expired, in stock), soonest-expiring first.
+    func ingredients(in items: [FridgeItem], now: Date = .now) -> [Ingredient] {
+        var byTerm: [String: Ingredient] = [:]
+        var order: [String] = []
+        for item in items.filter({ $0.count > 0 && $0.daysUntilExpiry(now: now) >= 0 })
+            .sorted(by: { $0.expiresAt < $1.expiresAt }) {
+            let term = keyTerm(for: item)
+            if byTerm[term] == nil {
+                byTerm[term] = Ingredient(term: term, daysUntilExpiry: item.daysUntilExpiry(now: now), category: item.category)
+                order.append(term)
+            }
+        }
+        return order.compactMap { byTerm[$0] }
+    }
+
+    // MARK: Variety
+
+    private static let titleFillerWords: Set<String> = [
+        "and", "with", "the", "a", "an", "of", "in", "on", "recipe", "recipes", "easy", "best", "simple", "homemade",
+    ]
+
+    /// "Chicken Strawberry Spinach Salad Recipe 5" and "Chicken and Strawberry Spinach Salad" share a key.
+    static func titleKey(_ title: String) -> String {
+        ShelfLifeService.tokenize(title)
+            .filter { !titleFillerWords.contains($0) && !$0.allSatisfy(\.isNumber) }
+            .map(singular)
+            .sorted()
+            .joined(separator: " ")
+    }
+
+    /// Drops recipes whose title says the same thing as an earlier one (keeps the first).
+    static func removingNearDuplicates(_ recipes: [Recipe]) -> [Recipe] {
+        var seenIDs = Set<String>()
+        var seenTitles = Set<String>()
+        return recipes.filter { recipe in
+            let key = titleKey(recipe.title)
+            guard seenIDs.insert(recipe.id).inserted else { return false }
+            return key.isEmpty || seenTitles.insert(key).inserted
+        }
     }
 
     func score(_ recipe: Recipe, items: [FridgeItem], now: Date = .now) -> ScoredRecipe {

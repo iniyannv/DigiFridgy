@@ -1,0 +1,13 @@
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcuserstate
+.build/
+build/
+.swiftpm/
+
+# Secrets (demo-only, never commit)
+Config/Secrets.xcconfig
+DigiFridgy/Resources/GoogleService-Info.plist
+
+.DS_Store

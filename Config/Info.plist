@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>DigiFridgy uses the camera to scan barcodes and grocery receipts.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>DigiFridgy uses your location to find nearby grocery stores and compare prices.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).refresh</string>
+	</array>
+	<key>EdamamAppID</key>
+	<string>$(EDAMAM_APP_ID)</string>
+	<key>EdamamAppKey</key>
+	<string>$(EDAMAM_APP_KEY)</string>
+	<key>KrogerClientID</key>
+	<string>$(KROGER_CLIENT_ID)</string>
+	<key>KrogerClientSecret</key>
+	<string>$(KROGER_CLIENT_SECRET)</string>
+	<key>CalorieNinjasKey</key>
+	<string>$(CALORIENINJAS_KEY)</string>
+</dict>
+</plist>

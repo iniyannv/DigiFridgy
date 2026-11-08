@@ -268,13 +268,89 @@ final class AppState {
         if category == ShelfLifeService.unknownCategoryID { category = shelfLife.categoryID(forName: product.name) }
         let allergens = product.allergenTags.isEmpty
             ? Allergen.implied(byCategory: category).map(\.rawValue) : product.allergenTags
-        return FridgeItem(
+        let item = FridgeItem(
             barcode: product.barcode.map(Barcode.normalize),
             name: product.name.isEmpty ? "Unknown product" : product.name,
             brand: product.brand, category: category, imageURL: product.imageURL,
             addedBy: user?.uid ?? "", expiresAt: shelfLife.estimatedExpiry(categoryID: category),
             source: .barcode, nutrition: product.nutrition, nutriScore: product.nutriScore, allergens: allergens
         )
+        return applyingOverride(to: item)
+    }
+
+    /// Scan result for a barcode: the looked-up product with the user's saved corrections applied,
+    /// or just the corrections when Open Food Facts doesn't know the barcode. Nil = unknown product.
+    func draftForScan(barcode: String) async throws -> FridgeItem? {
+        let code = Barcode.normalize(barcode)
+        let saved = services.productOverrides.override(forBarcode: code)
+        let product: ProductInfo?
+        do {
+            product = try await lookupProduct(barcode: code)
+        } catch {
+            // Offline / API error: the saved corrections are still enough to add the item.
+            guard saved != nil else { throw error }
+            product = nil
+        }
+        if let product, !product.name.isEmpty { return draft(from: product) }
+        guard saved != nil else { return nil }
+        return applyingOverride(to: FridgeItem(
+            barcode: code, name: "", category: ShelfLifeService.unknownCategoryID, imageURL: product?.imageURL,
+            addedBy: user?.uid ?? "", expiresAt: .now, source: .barcode))
+    }
+
+    /// Whether the user has saved corrections for this barcode.
+    func hasSavedCorrections(barcode: String?) -> Bool {
+        barcode.flatMap(services.productOverrides.override(forBarcode:)) != nil
+    }
+
+    /// Applies saved corrections (name, brand, category, nutrition) and re-derives what depends on the category.
+    private func applyingOverride(to item: FridgeItem) -> FridgeItem {
+        guard let code = item.normalizedBarcode,
+              let saved = services.productOverrides.override(forBarcode: code) else { return item }
+        var updated = item
+        saved.apply(to: &updated)
+        if updated.category != item.category || updated.expiresAt <= .now {
+            updated.expiresAt = shelfLife.estimatedExpiry(categoryID: updated.category)
+            updated.expiryIsEstimated = true
+        }
+        if item.allergens.isEmpty || (updated.category != item.category && item.allergens == Allergen.implied(byCategory: item.category).map(\.rawValue)) {
+            updated.allergens = Allergen.implied(byCategory: updated.category).map(\.rawValue)
+        }
+        return updated
+    }
+
+    /// Saves a newly scanned item. When the user changed the name, brand, category or nutrition from what
+    /// the lookup returned (or already had corrections for this barcode), remembers them for future scans.
+    /// `original == nil` means the user typed the product in themselves (unknown barcode): always remembered.
+    func saveScanned(_ item: FridgeItem, original: FridgeItem?) async -> Bool {
+        let edited = original.map { original in
+            item.name != original.name || item.brand != original.brand
+                || item.category != original.category || item.nutrition != original.nutrition
+        } ?? true
+        if item.barcode != nil, edited || hasSavedCorrections(barcode: item.barcode) {
+            services.productOverrides.remember(item)
+        }
+        return await save(item)
+    }
+
+    /// Edits an item already in the fridge. For barcode items the change is remembered for future scans.
+    func updateDetails(_ item: FridgeItem, name: String, brand: String?, category: String, nutrition: Nutrition?) async -> Bool {
+        var updated = item
+        updated.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.brand = brand.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        if updated.category != category {
+            if updated.allergens == Allergen.implied(byCategory: updated.category).map(\.rawValue) {
+                updated.allergens = Allergen.implied(byCategory: category).map(\.rawValue)
+            }
+            updated.category = category
+            if updated.expiryIsEstimated {
+                updated.expiresAt = shelfLife.estimatedExpiry(categoryID: category, from: updated.addedAt)
+            }
+        }
+        updated.nutrition = nutrition.flatMap { $0.isEmpty && $0.servingSize == nil ? nil : $0 }
+        guard await save(updated) else { return false }
+        if updated.barcode != nil { services.productOverrides.remember(updated) }
+        return true
     }
 
     /// For barcodes Open Food Facts doesn't know: user-typed name + CalorieNinjas nutrition.

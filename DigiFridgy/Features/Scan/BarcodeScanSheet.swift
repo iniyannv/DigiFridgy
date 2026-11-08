@@ -16,6 +16,8 @@ struct BarcodeScanSheet: View {
 
     @State private var stage: Stage = .scanning
     @State private var draft: FridgeItem?
+    /// What the lookup returned before the user's edits; nil when the user typed the product in.
+    @State private var lookedUp: FridgeItem?
     @State private var manualCode = ""
     @State private var unknownName = ""
     @State private var scanCount = 0
@@ -39,9 +41,10 @@ struct BarcodeScanSheet: View {
                     unknownView(code)
                 case .confirm:
                     if let draft {
-                        ItemConfirmationView(draft: draft) { saved in
+                        ItemConfirmationView(draft: draft,
+                                             usesSavedCorrections: app.hasSavedCorrections(barcode: draft.barcode)) { saved in
                             Task {
-                                if await app.save(saved) {
+                                if await app.saveScanned(saved, original: lookedUp) {
                                     app.showMessage("Added \(saved.name)")
                                     dismiss()
                                 }
@@ -134,6 +137,7 @@ struct BarcodeScanSheet: View {
                     Task {
                         stage = .lookingUp(code)
                         draft = await app.draft(name: unknownName, barcode: code)
+                        lookedUp = nil
                         stage = .confirm
                     }
                 }
@@ -165,8 +169,9 @@ struct BarcodeScanSheet: View {
         stage = .lookingUp(code)
         Task {
             do {
-                if let product = try await app.lookupProduct(barcode: code), !product.name.isEmpty {
-                    draft = app.draft(from: product)
+                if let scanned = try await app.draftForScan(barcode: code) {
+                    draft = scanned
+                    lookedUp = scanned
                     stage = .confirm
                 } else {
                     unknownName = ""

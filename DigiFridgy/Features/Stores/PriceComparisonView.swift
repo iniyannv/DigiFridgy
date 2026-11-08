@@ -59,7 +59,7 @@ struct StoresTabView: View {
                     Text("In your fridge")
                 } footer: {
                     Text(app.services.kroger.isLive
-                         ? "Kroger prices are live. Other chains show real nearby locations with sample prices."
+                         ? "Kroger prices are live from the Kroger API. Other chains show real nearby locations with sample prices."
                          : "Kroger API key not configured — all prices are samples.")
                 }
             }
@@ -91,7 +91,7 @@ struct PriceComparisonView: View {
         self.target = PriceTarget(item: item)
     }
 
-    private var cheapestID: String? { quotes.first?.id }
+    private var cheapestID: String? { quotes.first(where: \.hasPrice)?.id }
 
     var body: some View {
         List {
@@ -141,8 +141,11 @@ struct PriceComparisonView: View {
                 Text("Cheapest first")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
+                    if quotes.contains(where: { $0.store.isKroger && !$0.isSample }) {
+                        Text("Kroger-family prices are live from the Kroger API. “Not carried” means that store doesn't stock this product.")
+                    }
                     if quotes.contains(where: \.isSample) {
-                        Text("“Sample price” rows use real store locations with generated prices — those chains don't offer a public price API. \(hasLivePrices ? "Kroger prices are live from the Kroger API." : "")")
+                        Text("“Sample price” rows use real store locations with generated prices — those chains don't offer a public price API.")
                     }
                     Text("Tap a store to open directions in Apple Maps.")
                 }
@@ -182,9 +185,10 @@ struct PriceComparisonView: View {
             }
             ForEach(quotes) { quote in
                 let cheapest = quote.id == cheapestID
-                Marker(quote.effectivePrice.usd, systemImage: cheapest ? "star.fill" : "cart.fill",
+                Marker(quote.effectivePrice?.usd ?? "N/A",
+                       systemImage: cheapest ? "star.fill" : (quote.hasPrice ? "cart.fill" : "xmark"),
                        coordinate: quote.store.coordinate.clCoordinate)
-                    .tint(cheapest ? .green : (quote.isSample ? .gray : .blue))
+                    .tint(cheapest ? .green : (quote.isSample || !quote.hasPrice ? .gray : .blue))
                     .tag(quote.id)
             }
         }
@@ -220,18 +224,23 @@ struct PriceComparisonView: View {
     private static let placeholderQuote = PriceQuote(
         store: Store(id: "p", chain: "Store", name: "Store name here", address: "Address", coordinate: .demoFallback,
                      distanceMiles: 1.2, isKroger: false),
-        price: 3.49, promoPrice: nil, isSample: false)
+        price: 3.49, availability: .live)
 }
 
 private struct QuoteRow: View {
     var quote: PriceQuote
     var isCheapest: Bool
 
+    private var iconColor: Color {
+        if isCheapest { return .green }
+        return quote.availability == .live ? .blue : .secondary
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: isCheapest ? "star.circle.fill" : (quote.store.isKroger ? "k.circle.fill" : "cart.circle.fill"))
                 .font(.title2)
-                .foregroundStyle(isCheapest ? .green : (quote.isSample ? .secondary : Color.blue))
+                .foregroundStyle(iconColor)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(quote.store.chain).font(.body.weight(.semibold))
@@ -239,18 +248,35 @@ private struct QuoteRow: View {
                 }
                 Text(quote.store.name == quote.store.chain ? quote.store.address : quote.store.name)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if quote.availability == .live, let description = quote.productDescription {
+                    Text(description).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Text(String(format: "%.1f mi", quote.store.distanceMiles))
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                Text(quote.effectivePrice.usd)
-                    .font(.title3.weight(.bold).monospacedDigit())
-                    .foregroundStyle(isCheapest ? .green : .primary)
-                if let promo = quote.promoPrice, promo < quote.price {
-                    Text(quote.price.usd).font(.caption).strikethrough().foregroundStyle(.secondary)
+                switch quote.availability {
+                case .notCarried:
+                    Text("Not carried")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("Store doesn't have this item").font(.caption2).foregroundStyle(.tertiary)
+                case .failed:
+                    Text("Price unavailable")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("Kroger didn't respond").font(.caption2).foregroundStyle(.tertiary)
+                case .live, .sample:
+                    if let effective = quote.effectivePrice {
+                        Text(effective.usd)
+                            .font(.title3.weight(.bold).monospacedDigit())
+                            .foregroundStyle(isCheapest ? .green : .primary)
+                    }
+                    if let promo = quote.promoPrice, let price = quote.price, promo < price {
+                        Text(price.usd).font(.caption).strikethrough().foregroundStyle(.secondary)
+                    }
                 }
             }
+            .multilineTextAlignment(.trailing)
         }
         .contentShape(.rect)
     }

@@ -18,6 +18,8 @@ final class AppServices {
 
     let shelfLife = ShelfLifeService.shared
     let mockPrices = MockPriceService()
+    /// User corrections to scanned products, re-applied on every scan of the same barcode.
+    let productOverrides: ProductOverrideStore = AppServices.isRunningTests ? ProductOverrideStore(fileURL: nil) : .shared
     let scorer = RecipeScorer()
     let recallMatcher = RecallMatcher()
     let parser = ReceiptParser()

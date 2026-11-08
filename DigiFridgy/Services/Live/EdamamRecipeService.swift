@@ -44,13 +44,23 @@ final class EdamamRecipeService: RecipeService {
         params += healthLabels.map { ("health", $0) }
         params += ["uri", "label", "image", "url", "source", "ingredients", "calories", "yield", "totalTime"]
             .map { ("field", $0) }
-        var headers: [String: String] = [:]
-        // Required by Edamam accounts with active-user tracking; harmless otherwise.
-        if let userId { headers["Edamam-Account-User"] = String(userId.prefix(30)) }
-        let response = try await api.get(EdamamResponse.self,
-                                          from: api.url("https://api.edamam.com/api/recipes/v2", query: params),
-                                          headers: headers)
-        return response.hits.map { $0.recipe.toRecipe() }
+        let url = api.url("https://api.edamam.com/api/recipes/v2", query: params)
+        // Plans without active-user tracking reject the Edamam-Account-User header (401), so send it
+        // only when Edamam says the plan requires it.
+        do {
+            return try await api.get(EdamamResponse.self, from: url).hits.map { $0.recipe.toRecipe() }
+        } catch APIError.badStatus(401, let body) where Self.requiresUserHeader(body) {
+            guard let userId else { throw APIError.badStatus(401, body) }
+            let headers = ["Edamam-Account-User": String(userId.prefix(30))]
+            return try await api.get(EdamamResponse.self, from: url, headers: headers).hits.map { $0.recipe.toRecipe() }
+        }
+    }
+
+    /// True for the 401 Edamam sends when an active-user plan is called without the user header.
+    static func requiresUserHeader(_ body: String) -> Bool {
+        let text = body.lowercased()
+        return text.contains("edamam-account-user") && !text.contains("does not support users")
+            && !text.contains("do not supply")
     }
 }
 

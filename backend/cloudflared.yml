@@ -1,0 +1,7 @@
+tunnel: 603f079b-2e54-4aa2-be76-918f8b4764a4
+credentials-file: /Users/soumil/.cloudflared/603f079b-2e54-4aa2-be76-918f8b4764a4.json
+
+ingress:
+  - hostname: digifridgy.soumilvoona.me
+    service: http://localhost:8000
+  - service: http_status:404

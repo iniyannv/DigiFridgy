@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import uuid
+
 import httpx
 
 log = logging.getLogger("photon")
@@ -121,6 +123,12 @@ class PhotonClient:
 
     async def _call(self, method: str, path: str, **kw) -> Any:
         last = None
+        if method.upper() == "POST":
+            # Photon requires an idempotency key on every POST; reuse one across retries.
+            headers = dict(kw.get("headers") or {})
+            if not any(k.lower() == "idempotency-key" for k in headers):
+                headers["Idempotency-Key"] = str(uuid.uuid4())
+            kw["headers"] = headers
         for attempt in range(4):
             try:
                 r = await self._http.request(method, path, **kw)
